@@ -1,35 +1,39 @@
-extern crate mdbook;
 #[macro_use]
 extern crate pretty_assertions;
-extern crate select;
-extern crate tempdir;
-extern crate walkdir;
 
 mod dummy_book;
 
-use dummy_book::{assert_contains_strings, assert_doesnt_contain_strings, DummyBook};
+use crate::dummy_book::{assert_contains_strings, assert_doesnt_contain_strings, DummyBook};
 
+use mdbook::config::Config;
+use mdbook::errors::*;
+use mdbook::utils::fs::write_file;
+use mdbook::MDBook;
+use select::document::Document;
+use select::predicate::{Class, Name, Predicate};
+use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
-use std::ffi::OsStr;
+use tempfile::Builder as TempFileBuilder;
 use walkdir::{DirEntry, WalkDir};
-use select::document::Document;
-use select::predicate::{Class, Name, Predicate};
-use tempdir::TempDir;
-use mdbook::errors::*;
-use mdbook::utils::fs::file_to_string;
-use mdbook::config::Config;
-use mdbook::MDBook;
 
-const BOOK_ROOT: &'static str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/dummy_book");
-const TOC_TOP_LEVEL: &[&'static str] = &[
+const BOOK_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/dummy_book");
+const TOC_TOP_LEVEL: &[&str] = &[
     "1. First Chapter",
     "2. Second Chapter",
     "Conclusion",
+    "Dummy Book",
     "Introduction",
 ];
-const TOC_SECOND_LEVEL: &[&'static str] = &["1.1. Nested Chapter", "1.2. Includes"];
+const TOC_SECOND_LEVEL: &[&str] = &[
+    "1.1. Nested Chapter",
+    "1.2. Includes",
+    "1.3. Recursive",
+    "1.4. Markdown",
+    "1.5. Unicode",
+    "2.1. Nested Chapter",
+];
 
 /// Make sure you can load the dummy book and build it without panicking.
 #[test]
@@ -83,12 +87,11 @@ fn check_correct_cross_links_in_nested_dir() {
 
     let first = temp.path().join("book").join("first");
     let links = vec![
-        r#"<base href="../">"#,
-        r#"href="intro.html""#,
-        r#"href="first/index.html""#,
-        r#"href="first/nested.html""#,
-        r#"href="second.html""#,
-        r#"href="conclusion.html""#,
+        r#"href="../intro.html""#,
+        r#"href="../first/index.html""#,
+        r#"href="../first/nested.html""#,
+        r#"href="../second.html""#,
+        r#"href="../conclusion.html""#,
     ];
 
     let files_in_nested_dir = vec!["index.html", "nested.html"];
@@ -99,15 +102,32 @@ fn check_correct_cross_links_in_nested_dir() {
 
     assert_contains_strings(
         first.join("index.html"),
-        &[
-            r##"href="first/index.html#some-section" id="some-section""##,
-        ],
+        &[r##"href="#some-section" id="some-section""##],
     );
 
     assert_contains_strings(
         first.join("nested.html"),
+        &[r##"href="#some-section" id="some-section""##],
+    );
+}
+
+#[test]
+fn check_correct_relative_links_in_print_page() {
+    let temp = DummyBook::new().build().unwrap();
+    let md = MDBook::load(temp.path()).unwrap();
+    md.build().unwrap();
+
+    let first = temp.path().join("book");
+
+    assert_contains_strings(
+        first.join("print.html"),
         &[
-            r##"href="first/nested.html#some-section" id="some-section""##,
+            r##"<a href="second/../first/nested.html">the first section</a>,"##,
+            r##"<a href="second/../../std/foo/bar.html">outside</a>"##,
+            r##"<img src="second/../images/picture.png" alt="Some image" />"##,
+            r##"<a href="second/nested.html#some-section">fragment link</a>"##,
+            r##"<a href="second/../first/markdown.html">HTML Link</a>"##,
+            r##"<img src="second/../images/picture.png" alt="raw html">"##,
         ],
     );
 }
@@ -128,9 +148,39 @@ fn rendered_code_has_playpen_stuff() {
 }
 
 #[test]
+fn anchors_include_text_between_but_not_anchor_comments() {
+    let temp = DummyBook::new().build().unwrap();
+    let md = MDBook::load(temp.path()).unwrap();
+    md.build().unwrap();
+
+    let nested = temp.path().join("book/first/nested.html");
+    let text_between_anchors = vec!["unique-string-for-anchor-test"];
+    let anchor_text = vec!["ANCHOR"];
+
+    assert_contains_strings(nested.clone(), &text_between_anchors);
+    assert_doesnt_contain_strings(nested, &anchor_text);
+}
+
+#[test]
+fn rustdoc_include_hides_the_unspecified_part_of_the_file() {
+    let temp = DummyBook::new().build().unwrap();
+    let md = MDBook::load(temp.path()).unwrap();
+    md.build().unwrap();
+
+    let nested = temp.path().join("book/first/nested.html");
+    let text = vec![
+        "<span class=\"boring\">fn some_function() {",
+        "<span class=\"boring\">fn some_other_function() {",
+    ];
+
+    assert_contains_strings(nested, &text);
+}
+
+#[test]
 fn chapter_content_appears_in_rendered_document() {
     let content = vec![
-        ("index.html", "Here's some interesting text"),
+        ("index.html", "This file is just here to cause the"),
+        ("intro.html", "Here's some interesting text"),
         ("second.html", "Second Chapter"),
         ("first/nested.html", "testable code"),
         ("first/index.html", "more text"),
@@ -171,12 +221,13 @@ fn chapter_files_were_rendered_to_html() {
     let chapter_files = WalkDir::new(&src)
         .into_iter()
         .filter_entry(|entry| entry_ends_with(entry, ".md"))
-        .filter_map(|entry| entry.ok())
+        .filter_map(std::result::Result::ok)
         .map(|entry| entry.path().to_path_buf())
         .filter(|path| path.file_name().and_then(OsStr::to_str) != Some("SUMMARY.md"));
 
     for chapter in chapter_files {
-        let rendered_location = temp.path()
+        let rendered_location = temp
+            .path()
             .join(chapter.strip_prefix(&src).unwrap())
             .with_extension("html");
         assert!(
@@ -202,7 +253,7 @@ fn root_index_html() -> Result<Document> {
         .chain_err(|| "Book building failed")?;
 
     let index_page = temp.path().join("book").join("index.html");
-    let html = file_to_string(&index_page).chain_err(|| "Unable to read index.html")?;
+    let html = fs::read_to_string(&index_page).chain_err(|| "Unable to read index.html")?;
 
     Ok(Document::from(html.as_str()))
 }
@@ -213,9 +264,15 @@ fn check_second_toc_level() {
     let mut should_be = Vec::from(TOC_SECOND_LEVEL);
     should_be.sort();
 
-    let pred = descendants!(Class("chapter"), Name("li"), Name("li"), Name("a"));
+    let pred = descendants!(
+        Class("chapter"),
+        Name("li"),
+        Name("li"),
+        Name("a").and(Class("toggle").not())
+    );
 
-    let mut children_of_children: Vec<_> = doc.find(pred)
+    let mut children_of_children: Vec<_> = doc
+        .find(pred)
         .map(|elem| elem.text().trim().to_string())
         .collect();
     children_of_children.sort();
@@ -231,9 +288,14 @@ fn check_first_toc_level() {
     should_be.extend(TOC_SECOND_LEVEL);
     should_be.sort();
 
-    let pred = descendants!(Class("chapter"), Name("li"), Name("a"));
+    let pred = descendants!(
+        Class("chapter"),
+        Name("li"),
+        Name("a").and(Class("toggle").not())
+    );
 
-    let mut children: Vec<_> = doc.find(pred)
+    let mut children: Vec<_> = doc
+        .find(pred)
         .map(|elem| elem.text().trim().to_string())
         .collect();
     children.sort();
@@ -244,9 +306,10 @@ fn check_first_toc_level() {
 #[test]
 fn check_spacers() {
     let doc = root_index_html().unwrap();
-    let should_be = 1;
+    let should_be = 2;
 
-    let num_spacers = doc.find(Class("chapter").descendant(Name("li").and(Class("spacer"))))
+    let num_spacers = doc
+        .find(Class("chapter").descendant(Name("li").and(Class("spacer"))))
         .count();
     assert_eq!(num_spacers, should_be);
 }
@@ -307,10 +370,27 @@ fn able_to_include_files_in_chapters() {
 
     let includes = temp.path().join("book/first/includes.html");
 
-    let summary_strings = &["<h1>Summary</h1>", ">First Chapter</a>"];
+    let summary_strings = &[
+        r##"<h1><a class="header" href="#summary" id="summary">Summary</a></h1>"##,
+        ">First Chapter</a>",
+    ];
     assert_contains_strings(&includes, summary_strings);
 
     assert_doesnt_contain_strings(&includes, &["{{#include ../SUMMARY.md::}}"]);
+}
+
+/// Ensure cyclic includes are capped so that no exceptions occur
+#[test]
+fn recursive_includes_are_capped() {
+    let temp = DummyBook::new().build().unwrap();
+    let md = MDBook::load(temp.path()).unwrap();
+    md.build().unwrap();
+
+    let recursive = temp.path().join("book/first/recursive.html");
+    let content = &["Around the world, around the world
+Around the world, around the world
+Around the world, around the world"];
+    assert_contains_strings(&recursive, content);
 }
 
 #[test]
@@ -324,7 +404,7 @@ fn example_book_can_build() {
 
 #[test]
 fn book_with_a_reserved_filename_does_not_build() {
-    let tmp_dir = TempDir::new("mdBook").unwrap();
+    let tmp_dir = TempFileBuilder::new().prefix("mdBook").tempdir().unwrap();
     let src_path = tmp_dir.path().join("src");
     fs::create_dir(&src_path).unwrap();
 
@@ -338,4 +418,194 @@ fn book_with_a_reserved_filename_does_not_build() {
     let md = MDBook::load(tmp_dir.path()).unwrap();
     let got = md.build();
     assert!(got.is_err());
+}
+
+#[test]
+fn by_default_mdbook_use_index_preprocessor_to_convert_readme_to_index() {
+    let temp = DummyBook::new().build().unwrap();
+    let mut cfg = Config::default();
+    cfg.set("book.src", "src2")
+        .expect("Couldn't set config.book.src to \"src2\".");
+    let md = MDBook::load_with_config(temp.path(), cfg).unwrap();
+    md.build().unwrap();
+
+    let first_index = temp.path().join("book").join("first").join("index.html");
+    let expected_strings = vec![
+        r#"href="../first/index.html""#,
+        r#"href="../second/index.html""#,
+        "First README",
+    ];
+    assert_contains_strings(&first_index, &expected_strings);
+    assert_doesnt_contain_strings(&first_index, &["README.html"]);
+
+    let second_index = temp.path().join("book").join("second").join("index.html");
+    let unexpected_strings = vec!["Second README"];
+    assert_doesnt_contain_strings(&second_index, &unexpected_strings);
+}
+
+#[test]
+fn theme_dir_overrides_work_correctly() {
+    let book_dir = dummy_book::new_copy_of_example_book().unwrap();
+    let book_dir = book_dir.path();
+    let theme_dir = book_dir.join("theme");
+
+    let mut index = mdbook::theme::INDEX.to_vec();
+    index.extend_from_slice(b"\n<!-- This is a modified index.hbs! -->");
+
+    write_file(&theme_dir, "index.hbs", &index).unwrap();
+
+    let md = MDBook::load(book_dir).unwrap();
+    md.build().unwrap();
+
+    let built_index = book_dir.join("book").join("index.html");
+    dummy_book::assert_contains_strings(built_index, &["This is a modified index.hbs!"]);
+}
+
+#[test]
+fn no_index_for_print_html() {
+    let temp = DummyBook::new().build().unwrap();
+    let md = MDBook::load(temp.path()).unwrap();
+    md.build().unwrap();
+
+    let print_html = temp.path().join("book/print.html");
+    assert_contains_strings(print_html, &[r##"noindex"##]);
+
+    let index_html = temp.path().join("book/index.html");
+    assert_doesnt_contain_strings(index_html, &[r##"noindex"##]);
+}
+
+#[test]
+fn markdown_options() {
+    let temp = DummyBook::new().build().unwrap();
+    let md = MDBook::load(temp.path()).unwrap();
+    md.build().unwrap();
+
+    let path = temp.path().join("book/first/markdown.html");
+    assert_contains_strings(
+        &path,
+        &[
+            "<th>foo</th>",
+            "<th>bar</th>",
+            "<td>baz</td>",
+            "<td>bim</td>",
+        ],
+    );
+    assert_contains_strings(&path, &[
+        r##"<sup class="footnote-reference"><a href="#1">1</a></sup>"##,
+        r##"<sup class="footnote-reference"><a href="#word">2</a></sup>"##,
+        r##"<div class="footnote-definition" id="1"><sup class="footnote-definition-label">1</sup>"##,
+        r##"<div class="footnote-definition" id="word"><sup class="footnote-definition-label">2</sup>"##,
+    ]);
+    assert_contains_strings(&path, &["<del>strikethrough example</del>"]);
+    assert_contains_strings(
+        &path,
+        &[
+            "<li><input disabled=\"\" type=\"checkbox\" checked=\"\"/>\nApples",
+            "<li><input disabled=\"\" type=\"checkbox\" checked=\"\"/>\nBroccoli",
+            "<li><input disabled=\"\" type=\"checkbox\"/>\nCarrots",
+        ],
+    );
+}
+
+#[cfg(feature = "search")]
+mod search {
+    use crate::dummy_book::DummyBook;
+    use mdbook::MDBook;
+    use std::fs::{self, File};
+    use std::path::Path;
+
+    fn read_book_index(root: &Path) -> serde_json::Value {
+        let index = root.join("book/searchindex.js");
+        let index = fs::read_to_string(index).unwrap();
+        let index = index.trim_start_matches("Object.assign(window.search, ");
+        let index = index.trim_end_matches(");");
+        serde_json::from_str(&index).unwrap()
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn book_creates_reasonable_search_index() {
+        let temp = DummyBook::new().build().unwrap();
+        let md = MDBook::load(temp.path()).unwrap();
+        md.build().unwrap();
+
+        let index = read_book_index(temp.path());
+
+        let doc_urls = index["doc_urls"].as_array().unwrap();
+        let get_doc_ref =
+            |url: &str| -> String { doc_urls.iter().position(|s| s == url).unwrap().to_string() };
+
+        let first_chapter = get_doc_ref("first/index.html#first-chapter");
+        let introduction = get_doc_ref("intro.html#introduction");
+        let some_section = get_doc_ref("first/index.html#some-section");
+        let summary = get_doc_ref("first/includes.html#summary");
+        let conclusion = get_doc_ref("conclusion.html#conclusion");
+
+        let bodyidx = &index["index"]["index"]["body"]["root"];
+        let textidx = &bodyidx["t"]["e"]["x"]["t"];
+        assert_eq!(textidx["df"], 2);
+        assert_eq!(textidx["docs"][&first_chapter]["tf"], 1.0);
+        assert_eq!(textidx["docs"][&introduction]["tf"], 1.0);
+
+        let docs = &index["index"]["documentStore"]["docs"];
+        assert_eq!(docs[&first_chapter]["body"], "more text.");
+        assert_eq!(docs[&some_section]["body"], "");
+        assert_eq!(
+            docs[&summary]["body"],
+            "Dummy Book Introduction First Chapter Nested Chapter Includes Recursive Markdown Unicode Second Chapter Nested Chapter Conclusion"
+        );
+        assert_eq!(docs[&summary]["breadcrumbs"], "First Chapter » Summary");
+        assert_eq!(docs[&conclusion]["body"], "I put &lt;HTML&gt; in here!");
+    }
+
+    // Setting this to `true` may cause issues with `cargo watch`,
+    // since it may not finish writing the fixture before the tests
+    // are run again.
+    const GENERATE_FIXTURE: bool = false;
+
+    fn get_fixture() -> serde_json::Value {
+        if GENERATE_FIXTURE {
+            let temp = DummyBook::new().build().unwrap();
+            let md = MDBook::load(temp.path()).unwrap();
+            md.build().unwrap();
+
+            let src = read_book_index(temp.path());
+
+            let dest = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/searchindex_fixture.json");
+            let dest = File::create(&dest).unwrap();
+            serde_json::to_writer_pretty(dest, &src).unwrap();
+
+            src
+        } else {
+            let json = include_str!("searchindex_fixture.json");
+            serde_json::from_str(json).expect("Unable to deserialize the fixture")
+        }
+    }
+
+    // So you've broken the test. If you changed dummy_book, it's probably
+    // safe to regenerate the fixture. If you haven't then make sure that the
+    // search index still works. Run `cargo run -- serve tests/dummy_book`
+    // and try some searches. Are you getting results? Do the teasers look OK?
+    // Are there new errors in the JS console?
+    //
+    // If you're pretty sure you haven't broken anything, change `GENERATE_FIXTURE`
+    // above to `true`, and run `cargo test` to generate a new fixture. Then
+    // **change it back to `false`**. Include the changed `searchindex_fixture.json` in your commit.
+    #[test]
+    fn search_index_hasnt_changed_accidentally() {
+        let temp = DummyBook::new().build().unwrap();
+        let md = MDBook::load(temp.path()).unwrap();
+        md.build().unwrap();
+
+        let book_index = read_book_index(temp.path());
+
+        let fixture_index = get_fixture();
+
+        // Uncomment this if you're okay with pretty-printing 32KB of JSON
+        //assert_eq!(fixture_index, book_index);
+
+        if book_index != fixture_index {
+            panic!("The search index has changed from the fixture");
+        }
+    }
 }

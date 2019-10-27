@@ -1,4 +1,3 @@
-Cargo.lock
 target
 
 # MacOS temp file
@@ -10,3 +9,5 @@ book-example/book
 .vscode
 tests/dummy_book/book/
 
+# Ignore Jetbrains specific files.
+.idea/

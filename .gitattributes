@@ -2,3 +2,7 @@
 
 * text=auto eol=lf
 *.rs rust
+*.woff binary
+*.ttf binary
+*.otf binary
+*.png binary

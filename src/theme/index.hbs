@@ -1,48 +1,51 @@
 <!DOCTYPE HTML>
-<html lang="{{ language }}">
+<html lang="{{ language }}" class="sidebar-visible no-js {{ default_theme }}">
     <head>
+        <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
         <title>{{ title }}</title>
+        {{#if is_print }}
+        <meta name="robots" content="noindex" />
+        {{/if}}
+
         <meta content="text/html; charset=utf-8" http-equiv="Content-Type">
         <meta name="description" content="{{ description }}">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff" />
 
-        <base href="{{ path_to_root }}">
+        <link rel="shortcut icon" href="{{ path_to_root }}{{ favicon }}">
+        <link rel="stylesheet" href="{{ path_to_root }}css/variables.css">
+        <link rel="stylesheet" href="{{ path_to_root }}css/general.css">
+        <link rel="stylesheet" href="{{ path_to_root }}css/chrome.css">
+        <link rel="stylesheet" href="{{ path_to_root }}css/print.css" media="print">
 
-        <link rel="stylesheet" href="book.css">
+        <!-- Fonts -->
+        <link rel="stylesheet" href="{{ path_to_root }}FontAwesome/css/font-awesome.css">
         <link href="https://fonts.googleapis.com/css?family=Open+Sans:300italic,400italic,600italic,700italic,800italic,400,300,600,700,800" rel="stylesheet" type="text/css">
         <link href="https://fonts.googleapis.com/css?family=Source+Code+Pro:500" rel="stylesheet" type="text/css">
 
-        <link rel="shortcut icon" href="{{ favicon }}">
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="{{ path_to_root }}highlight.css">
+        <link rel="stylesheet" href="{{ path_to_root }}tomorrow-night.css">
+        <link rel="stylesheet" href="{{ path_to_root }}ayu-highlight.css">
 
-        <!-- Font Awesome -->
-        <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/font-awesome/4.3.0/css/font-awesome.min.css">
-
-        <link rel="stylesheet" href="highlight.css">
-        <link rel="stylesheet" href="tomorrow-night.css">
-        <link rel="stylesheet" href="ayu-highlight.css">
-
-        <!-- Custom theme -->
+        <!-- Custom theme stylesheets -->
         {{#each additional_css}}
-        <link rel="stylesheet" href="{{this}}">
+        <link rel="stylesheet" href="{{ ../path_to_root }}{{ this }}">
         {{/each}}
 
         {{#if mathjax_support}}
         <!-- MathJax -->
-        <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+        <script async type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
         {{/if}}
-
-        <!-- Fetch Clipboard.js from CDN but have a local fallback -->
-        <script src="https://cdn.jsdelivr.net/clipboard.js/1.6.1/clipboard.min.js"></script>
-        <script>
-            if (typeof Clipboard == 'undefined') {
-                document.write(unescape("%3Cscript src='clipboard.min.js'%3E%3C/script%3E"));
-            }
+    </head>
+    <body>
+        <!-- Provide site root to javascript -->
+        <script type="text/javascript">
+            var path_to_root = "{{ path_to_root }}";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "{{ preferred_dark_theme }}" : "{{ default_theme }}";
         </script>
 
-    </head>
-    <body class="light">
         <!-- Work around some values being stored in localStorage wrapped in quotes -->
         <script type="text/javascript">
             try {
@@ -62,23 +65,32 @@
         <!-- Set the theme before any content is loaded, prevents flash -->
         <script type="text/javascript">
             var theme;
-            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { } 
-            if (theme === null || theme === undefined) { theme = 'light'; }
-            document.body.className = theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            var html = document.querySelector('html');
+            html.classList.remove('no-js')
+            html.classList.remove('{{ default_theme }}')
+            html.classList.add(theme);
+            html.classList.add('js');
         </script>
 
         <!-- Hide / unhide sidebar before it is displayed -->
         <script type="text/javascript">
+            var html = document.querySelector('html');
             var sidebar = 'hidden';
             if (document.body.clientWidth >= 1080) {
                 try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
                 sidebar = sidebar || 'visible';
             }
-            document.querySelector('html').classList.add("sidebar-" + sidebar);
+            html.classList.remove('sidebar-visible');
+            html.classList.add("sidebar-" + sidebar);
         </script>
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
-            {{#toc}}{{/toc}}
+            <div id="sidebar-scrollbox" class="sidebar-scrollbox">
+                {{#toc}}{{/toc}}
+            </div>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle"></div>
         </nav>
 
         <div id="page-wrapper" class="page-wrapper">
@@ -88,30 +100,53 @@
                 <div id="menu-bar" class="menu-bar">
                     <div id="menu-bar-sticky-container">
                         <div class="left-buttons">
-                            <button id="sidebar-toggle" class="icon-button" type="button" title="Toggle Table of Contents" aria-controls="sidebar">
+                            <button id="sidebar-toggle" class="icon-button" type="button" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
                                 <i class="fa fa-bars"></i>
                             </button>
-                            <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
                                 <i class="fa fa-paint-brush"></i>
                             </button>
-                            <ul id="theme-list" class="theme-popup" aria-label="submenu">
-                                <li><button class="theme" id="light">Light <span class="default">(default)</span></button></li>
-                                <li><button class="theme" id="rust">Rust</button></li>
-                                <li><button class="theme" id="coal">Coal</button></li>
-                                <li><button class="theme" id="navy">Navy</button></li>
-                                <li><button class="theme" id="ayu">Ayu</button></li>
+                            <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                                <li role="none"><button role="menuitem" class="theme" id="light">{{ theme_option "Light" }}</button></li>
+                                <li role="none"><button role="menuitem" class="theme" id="rust">{{ theme_option "Rust" }}</button></li>
+                                <li role="none"><button role="menuitem" class="theme" id="coal">{{ theme_option "Coal" }}</button></li>
+                                <li role="none"><button role="menuitem" class="theme" id="navy">{{ theme_option "Navy" }}</button></li>
+                                <li role="none"><button role="menuitem" class="theme" id="ayu">{{ theme_option "Ayu" }}</button></li>
                             </ul>
+                            {{#if search_enabled}}
+                            <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                                <i class="fa fa-search"></i>
+                            </button>
+                            {{/if}}
                         </div>
 
                         <h1 class="menu-title">{{ book_title }}</h1>
 
                         <div class="right-buttons">
-                            <a href="print.html" title="Print this book">
+                            <a href="{{ path_to_root }}print.html" title="Print this book" aria-label="Print this book">
                                 <i id="print-button" class="fa fa-print"></i>
                             </a>
+                            {{#if git_repository_url}}
+                            <a href="{{git_repository_url}}" title="Git repository" aria-label="Git repository">
+                                <i id="git-repository-button" class="fa {{git_repository_icon}}"></i>
+                            </a>
+                            {{/if}}
                         </div>
                     </div>
                 </div>
+
+                {{#if search_enabled}}
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" name="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+                {{/if}}
 
                 <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
                 <script type="text/javascript">
@@ -130,13 +165,13 @@
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
                         {{#previous}}
-                            <a rel="prev" href="{{link}}" class="mobile-nav-chapters previous" title="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="{{ path_to_root }}{{link}}" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
                         {{/previous}}
 
                         {{#next}}
-                            <a rel="next" href="{{link}}" class="mobile-nav-chapters next" title="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next" href="{{ path_to_root }}{{link}}" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
                         {{/next}}
@@ -148,31 +183,19 @@
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
                 {{#previous}}
-                    <a href="{{link}}" class="nav-chapters previous" title="Previous chapter" aria-keyshortcuts="Left">
+                    <a href="{{ path_to_root }}{{link}}" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
                 {{/previous}}
 
                 {{#next}}
-                    <a href="{{link}}" class="nav-chapters next" title="Next chapter" aria-keyshortcuts="Right">
+                    <a href="{{ path_to_root }}{{link}}" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
                 {{/next}}
             </nav>
 
         </div>
-
-
-        <!-- Local fallback for Font Awesome -->
-        <script>
-            if (getComputedStyle(document.querySelector(".fa")).fontFamily !== "FontAwesome") {
-                var link = document.createElement('link');
-                link.rel = 'stylesheet';
-                link.type = 'text/css';
-                link.href = '_FontAwesome/css/font-awesome.css';
-                document.head.insertBefore(link, document.head.firstChild)
-            }
-        </script>
 
         {{#if livereload}}
         <!-- Livereload script (if served using the cli tool) -->
@@ -193,7 +216,7 @@
 
         {{#if google_analytics}}
         <!-- Google Analytics Tag -->
-        <script>
+        <script type="text/javascript">
             var localAddrs = ["localhost", "127.0.0.1", ""];
 
             // make sure we don't activate google analytics if the developer is
@@ -210,29 +233,58 @@
         </script>
         {{/if}}
 
-        {{#if playpens_editable}}
-        <script src="{{ ace_js }}" type="text/javascript" charset="utf-8"></script>
-        <script src="{{ editor_js }}" type="text/javascript" charset="utf-8"></script>
-        <script src="{{ mode_rust_js }}" type="text/javascript" charset="utf-8"></script>
-        <script src="{{ theme_dawn_js }}" type="text/javascript" charset="utf-8"></script>
-        <script src="{{ theme_tomorrow_night_js }}" type="text/javascript" charset="utf-8"></script>
+        {{#if playpen_line_numbers}}
+        <script type="text/javascript">
+            window.playpen_line_numbers = true;
+        </script>
         {{/if}}
-
-        {{#if is_print}}
-        <script>
-            document.addEventListener('DOMContentLoaded', function() {
-                window.print();
-            })
+        
+        {{#if playpen_copyable}}
+        <script type="text/javascript">
+            window.playpen_copyable = true;
         </script>
         {{/if}}
 
-        <script src="highlight.js"></script>
-        <script src="book.js"></script>
+        {{#if playpen_js}}
+        <script src="{{ path_to_root }}ace.js" type="text/javascript" charset="utf-8"></script>
+        <script src="{{ path_to_root }}editor.js" type="text/javascript" charset="utf-8"></script>
+        <script src="{{ path_to_root }}mode-rust.js" type="text/javascript" charset="utf-8"></script>
+        <script src="{{ path_to_root }}theme-dawn.js" type="text/javascript" charset="utf-8"></script>
+        <script src="{{ path_to_root }}theme-tomorrow_night.js" type="text/javascript" charset="utf-8"></script>
+        {{/if}}
 
-        <!-- Custom JS script -->
+        {{#if search_js}}
+        <script src="{{ path_to_root }}elasticlunr.min.js" type="text/javascript" charset="utf-8"></script>
+        <script src="{{ path_to_root }}mark.min.js" type="text/javascript" charset="utf-8"></script>
+        <script src="{{ path_to_root }}searcher.js" type="text/javascript" charset="utf-8"></script>
+        {{/if}}
+
+        <script src="{{ path_to_root }}clipboard.min.js" type="text/javascript" charset="utf-8"></script>
+        <script src="{{ path_to_root }}highlight.js" type="text/javascript" charset="utf-8"></script>
+        <script src="{{ path_to_root }}book.js" type="text/javascript" charset="utf-8"></script>
+
+        <!-- Custom JS scripts -->
         {{#each additional_js}}
-        <script type="text/javascript" src="{{this}}"></script>
+        <script type="text/javascript" src="{{ ../path_to_root }}{{this}}"></script>
         {{/each}}
+
+        {{#if is_print}}
+        {{#if mathjax_support}}
+        <script type="text/javascript">
+        window.addEventListener('load', function() {
+            MathJax.Hub.Register.StartupHook('End', function() {
+                window.setTimeout(window.print, 100);
+            });
+        });
+        </script>
+        {{else}}
+        <script type="text/javascript">
+        window.addEventListener('load', function() {
+            window.setTimeout(window.print, 100);
+        });
+        </script>
+        {{/if}}
+        {{/if}}
 
     </body>
 </html>

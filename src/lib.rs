@@ -1,7 +1,8 @@
 //! # mdBook
 //!
-//! **mdBook** is similar to GitBook but implemented in Rust.
-//! It offers a command line interface, but can also be used as a regular crate.
+//! **mdBook** is a tool for rendering a collection of markdown documents into
+//! a form more suitable for end users like HTML or EPUB.  It offers a command
+//! line interface, but this crate can be used if more control is required.
 //!
 //! This is the API doc, the [user guide] is also available if you want
 //! information about the command line tool, format, structure etc. It is also
@@ -14,6 +15,12 @@
 //! - Do some processing or test before building your book
 //! - Accessing the public API to help create a new Renderer
 //! - ...
+//!
+//! > **Note:** While we try to ensure `mdbook`'s command-line interface and
+//! > behaviour are backwards compatible, the tool's internals are still
+//! > evolving and being iterated on. If you wish to prevent accidental
+//! > breakages it is recommended to pin any tools building on top of the
+//! > `mdbook` crate to a specific release.
 //!
 //! # Examples
 //!
@@ -52,20 +59,20 @@
 //!
 //! ## Implementing a new Backend
 //!
-//! `mdbook` has a fairly flexible mechanism for creating additional backends 
+//! `mdbook` has a fairly flexible mechanism for creating additional backends
 //! for your book. The general idea is you'll add an extra table in the book's
 //! `book.toml` which specifies an executable to be invoked by `mdbook`. This
-//! executable will then be called during a build, with an in-memory 
+//! executable will then be called during a build, with an in-memory
 //! representation ([`RenderContext`]) of the book being passed to the
-//! subprocess via `stdin`. 
-//! 
-//! The [`RenderContext`] gives the backend access to the contents of 
+//! subprocess via `stdin`.
+//!
+//! The [`RenderContext`] gives the backend access to the contents of
 //! `book.toml` and lets it know which directory all generated artefacts should
 //! be placed in. For a much more in-depth explanation, consult the [relevant
 //! chapter] in the *For Developers* section of the user guide.
-//! 
-//! To make creating a backend easier, the `mdbook` crate can be imported 
-//! directly, making deserializing the `RenderContext` easy and giving you 
+//!
+//! To make creating a backend easier, the `mdbook` crate can be imported
+//! directly, making deserializing the `RenderContext` easy and giving you
 //! access to the various methods for working with the [`Config`].
 //!
 //! [user guide]: https://rust-lang-nursery.github.io/mdBook/
@@ -74,63 +81,57 @@
 //! [`Config`]: config/struct.Config.html
 
 #![deny(missing_docs)]
+#![deny(rust_2018_idioms)]
 
 #[macro_use]
 extern crate error_chain;
-extern crate handlebars;
-extern crate itertools;
 #[macro_use]
 extern crate lazy_static;
 #[macro_use]
 extern crate log;
-extern crate memchr;
-extern crate pulldown_cmark;
-extern crate regex;
-extern crate serde;
 #[macro_use]
 extern crate serde_derive;
 #[macro_use]
 extern crate serde_json;
-extern crate shlex;
-extern crate tempdir;
-extern crate toml;
-extern crate toml_query;
 
 #[cfg(test)]
 #[macro_use]
 extern crate pretty_assertions;
 
-pub mod preprocess;
 pub mod book;
 pub mod config;
+pub mod preprocess;
 pub mod renderer;
 pub mod theme;
 pub mod utils;
 
-pub use book::MDBook;
-pub use book::BookItem;
-pub use renderer::Renderer;
-pub use config::Config;
+/// The current version of `mdbook`.
+///
+/// This is provided as a way for custom preprocessors and renderers to do
+/// compatibility checks.
+pub const MDBOOK_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+pub use crate::book::BookItem;
+pub use crate::book::MDBook;
+pub use crate::config::Config;
+pub use crate::renderer::Renderer;
 
 /// The error types used through out this crate.
 pub mod errors {
     use std::path::PathBuf;
 
-    error_chain!{
+    error_chain! {
         foreign_links {
-            Io(::std::io::Error) #[doc = "A wrapper around `std::io::Error`"];
-            HandlebarsRender(::handlebars::RenderError) #[doc = "Handlebars rendering failed"];
-            HandlebarsTemplate(Box<::handlebars::TemplateError>) #[doc = "Unable to parse the template"];
-            Utf8(::std::string::FromUtf8Error) #[doc = "Invalid UTF-8"];
-        }
-
-        links {
-            TomlQuery(::toml_query::error::Error, ::toml_query::error::ErrorKind) #[doc = "A TomlQuery error"];
+            Io(std::io::Error) #[doc = "A wrapper around `std::io::Error`"];
+            HandlebarsRender(handlebars::RenderError) #[doc = "Handlebars rendering failed"];
+            HandlebarsTemplate(Box<handlebars::TemplateError>) #[doc = "Unable to parse the template"];
+            Utf8(std::string::FromUtf8Error) #[doc = "Invalid UTF-8"];
+            SerdeJson(serde_json::Error) #[doc = "JSON conversion failed"];
         }
 
         errors {
             /// A subprocess exited with an unsuccessful return code.
-            Subprocess(message: String, output: ::std::process::Output) {
+            Subprocess(message: String, output: std::process::Output) {
                 description("A subprocess failed")
                 display("{}: {}", message, String::from_utf8_lossy(&output.stdout))
             }
@@ -146,12 +147,18 @@ pub mod errors {
                 description("Reserved Filename")
                 display("{} is reserved for internal use", filename.display())
             }
+
+            /// Error with a TOML file.
+            TomlQueryError(inner: toml_query::error::Error) {
+                description("toml_query error")
+                display("{}", inner)
+            }
         }
     }
 
     // Box to halve the size of Error
-    impl From<::handlebars::TemplateError> for Error {
-        fn from(e: ::handlebars::TemplateError) -> Error {
+    impl From<handlebars::TemplateError> for Error {
+        fn from(e: handlebars::TemplateError) -> Error {
             From::from(Box::new(e))
         }
     }

@@ -1,73 +1,115 @@
-use std::path::Path;
 use std::collections::BTreeMap;
+use std::path::Path;
 
-use serde_json;
-use handlebars::{Handlebars, Helper, HelperDef, RenderContext, RenderError};
-use pulldown_cmark::{html, Event, Parser, Tag};
+use crate::utils;
+
+use handlebars::{Context, Handlebars, Helper, HelperDef, Output, RenderContext, RenderError};
+use pulldown_cmark::{html, Event, Parser};
 
 // Handlebars helper to construct TOC
 #[derive(Clone, Copy)]
 pub struct RenderToc {
-    pub no_section_label: bool
+    pub no_section_label: bool,
 }
 
 impl HelperDef for RenderToc {
-    fn call(&self, _h: &Helper, _: &Handlebars, rc: &mut RenderContext) -> Result<(), RenderError> {
+    fn call<'reg: 'rc, 'rc>(
+        &self,
+        _h: &Helper<'reg, 'rc>,
+        _r: &'reg Handlebars,
+        ctx: &'rc Context,
+        rc: &mut RenderContext<'reg>,
+        out: &mut dyn Output,
+    ) -> Result<(), RenderError> {
         // get value from context data
         // rc.get_path() is current json parent path, you should always use it like this
         // param is the key of value you want to display
-        let chapters = rc.evaluate_absolute("chapters").and_then(|c| {
-            serde_json::value::from_value::<Vec<BTreeMap<String, String>>>(c.clone())
+        let chapters = rc.evaluate(ctx, "@root/chapters").and_then(|c| {
+            serde_json::value::from_value::<Vec<BTreeMap<String, String>>>(c.as_json().clone())
                 .map_err(|_| RenderError::new("Could not decode the JSON data"))
         })?;
-        let current = rc.evaluate_absolute("path")?
-                        .as_str()
-                        .ok_or_else(|| RenderError::new("Type error for `path`, string expected"))?
-                        .replace("\"", "");
+        let current_path = rc
+            .evaluate(ctx, "@root/path")?
+            .as_json()
+            .as_str()
+            .ok_or(RenderError::new("Type error for `path`, string expected"))?
+            .replace("\"", "");
 
-        rc.writer.write_all(b"<ol class=\"chapter\">")?;
+        let current_section = rc
+            .evaluate(ctx, "@root/section")?
+            .as_json()
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_default();
+
+        let fold_enable = rc
+            .evaluate(ctx, "@root/fold_enable")?
+            .as_json()
+            .as_bool()
+            .ok_or(RenderError::new(
+                "Type error for `fold_enable`, bool expected",
+            ))?;
+
+        let fold_level = rc
+            .evaluate(ctx, "@root/fold_level")?
+            .as_json()
+            .as_u64()
+            .ok_or(RenderError::new(
+                "Type error for `fold_level`, u64 expected",
+            ))?;
+
+        out.write("<ol class=\"chapter\">")?;
 
         let mut current_level = 1;
 
         for item in chapters {
             // Spacer
             if item.get("spacer").is_some() {
-                rc.writer.write_all(b"<li class=\"spacer\"></li>")?;
+                out.write("<li class=\"spacer\"></li>")?;
                 continue;
             }
 
-            let level = if let Some(s) = item.get("section") {
-                s.matches('.').count()
+            let (section, level) = if let Some(s) = item.get("section") {
+                (s.as_str(), s.matches('.').count())
             } else {
-                1
+                ("", 1)
+            };
+
+            let is_expanded = {
+                if !fold_enable {
+                    // Disable fold. Expand all chapters.
+                    true
+                } else if !section.is_empty() && current_section.starts_with(section) {
+                    // The section is ancestor or the current section itself.
+                    true
+                } else {
+                    // Levels that are larger than this would be folded.
+                    level - 1 < fold_level as usize
+                }
             };
 
             if level > current_level {
                 while level > current_level {
-                    rc.writer.write_all(b"<li>")?;
-                    rc.writer.write_all(b"<ol class=\"section\">")?;
+                    out.write("<li>")?;
+                    out.write("<ol class=\"section\">")?;
                     current_level += 1;
                 }
-                rc.writer.write_all(b"<li>")?;
+                write_li_open_tag(out, is_expanded, false)?;
             } else if level < current_level {
                 while level < current_level {
-                    rc.writer.write_all(b"</ol>")?;
-                    rc.writer.write_all(b"</li>")?;
+                    out.write("</ol>")?;
+                    out.write("</li>")?;
                     current_level -= 1;
                 }
-                rc.writer.write_all(b"<li>")?;
+                write_li_open_tag(out, is_expanded, false)?;
             } else {
-                rc.writer.write_all(b"<li")?;
-                if item.get("section").is_none() {
-                    rc.writer.write_all(b" class=\"affix\"")?;
-                }
-                rc.writer.write_all(b">")?;
+                write_li_open_tag(out, is_expanded, item.get("section").is_none())?;
             }
 
             // Link
             let path_exists = if let Some(path) = item.get("path") {
                 if !path.is_empty() {
-                    rc.writer.write_all(b"<a href=\"")?;
+                    out.write("<a href=\"")?;
 
                     let tmp = Path::new(item.get("path").expect("Error: path should be Some(_)"))
                         .with_extension("html")
@@ -77,14 +119,15 @@ impl HelperDef for RenderToc {
                         .replace("\\", "/");
 
                     // Add link
-                    rc.writer.write_all(tmp.as_bytes())?;
-                    rc.writer.write_all(b"\"")?;
+                    out.write(&utils::fs::path_to_root(&current_path))?;
+                    out.write(&tmp)?;
+                    out.write("\"")?;
 
-                    if path == &current {
-                        rc.writer.write_all(b" class=\"active\"")?;
+                    if path == &current_path {
+                        out.write(" class=\"active\"")?;
                     }
 
-                    rc.writer.write_all(b">")?;
+                    out.write(">")?;
                     true
                 } else {
                     false
@@ -96,9 +139,9 @@ impl HelperDef for RenderToc {
             if !self.no_section_label {
                 // Section does not necessarily exist
                 if let Some(section) = item.get("section") {
-                    rc.writer.write_all(b"<strong aria-hidden=\"true\">")?;
-                    rc.writer.write_all(section.as_bytes())?;
-                    rc.writer.write_all(b"</strong> ")?;
+                    out.write("<strong aria-hidden=\"true\">")?;
+                    out.write(&section)?;
+                    out.write("</strong> ")?;
                 }
             }
 
@@ -107,34 +150,54 @@ impl HelperDef for RenderToc {
 
                 // filter all events that are not inline code blocks
                 let parser = Parser::new(name).filter(|event| match *event {
-                                                          Event::Start(Tag::Code) |
-                                                          Event::End(Tag::Code) |
-                                                          Event::InlineHtml(_) |
-                                                          Event::Text(_) => true,
-                                                          _ => false,
-                                                      });
+                    Event::Code(_) | Event::InlineHtml(_) | Event::Text(_) => true,
+                    _ => false,
+                });
 
                 // render markdown to html
                 let mut markdown_parsed_name = String::with_capacity(name.len() * 3 / 2);
                 html::push_html(&mut markdown_parsed_name, parser);
 
                 // write to the handlebars template
-                rc.writer.write_all(markdown_parsed_name.as_bytes())?;
+                out.write(&markdown_parsed_name)?;
             }
 
             if path_exists {
-                rc.writer.write_all(b"</a>")?;
+                out.write("</a>")?;
             }
 
-            rc.writer.write_all(b"</li>")?;
+            // Render expand/collapse toggle
+            if let Some(flag) = item.get("has_sub_items") {
+                let has_sub_items = flag.parse::<bool>().unwrap_or_default();
+                if fold_enable && has_sub_items {
+                    out.write("<a class=\"toggle\"><div>❱</div></a>")?;
+                }
+            }
+            out.write("</li>")?;
         }
         while current_level > 1 {
-            rc.writer.write_all(b"</ol>")?;
-            rc.writer.write_all(b"</li>")?;
+            out.write("</ol>")?;
+            out.write("</li>")?;
             current_level -= 1;
         }
 
-        rc.writer.write_all(b"</ol>")?;
+        out.write("</ol>")?;
         Ok(())
     }
+}
+
+fn write_li_open_tag(
+    out: &mut dyn Output,
+    is_expanded: bool,
+    is_affix: bool,
+) -> Result<(), std::io::Error> {
+    let mut li = String::from("<li class=\"");
+    if is_expanded {
+        li.push_str("expanded ");
+    }
+    if is_affix {
+        li.push_str("affix ");
+    }
+    li.push_str("\">");
+    out.write(&li)
 }

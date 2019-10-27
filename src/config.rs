@@ -1,48 +1,47 @@
 //! Mdbook's configuration system.
-//! 
+//!
 //! The main entrypoint of the `config` module is the `Config` struct. This acts
 //! essentially as a bag of configuration information, with a couple
-//! pre-determined tables (`BookConfig` and `BuildConfig`) as well as support 
-//! for arbitrary data which is exposed to plugins and alternate backends.
-//! 
-//! 
+//! pre-determined tables (`BookConfig` and `BuildConfig`) as well as support
+//! for arbitrary data which is exposed to plugins and alternative backends.
+//!
+//!
 //! # Examples
-//! 
+//!
 //! ```rust
-//! # extern crate mdbook;
 //! # use mdbook::errors::*;
-//! # extern crate toml;
 //! use std::path::PathBuf;
+//! use std::str::FromStr;
 //! use mdbook::Config;
 //! use toml::Value;
-//! 
+//!
 //! # fn run() -> Result<()> {
 //! let src = r#"
 //! [book]
 //! title = "My Book"
 //! authors = ["Michael-F-Bryan"]
-//! 
+//!
 //! [build]
 //! src = "out"
-//! 
+//!
 //! [other-table.foo]
 //! bar = 123
 //! "#;
-//! 
+//!
 //! // load the `Config` from a toml string
 //! let mut cfg = Config::from_str(src)?;
-//! 
+//!
 //! // retrieve a nested value
 //! let bar = cfg.get("other-table.foo.bar").cloned();
 //! assert_eq!(bar, Some(Value::Integer(123)));
-//! 
+//!
 //! // Set the `output.html.theme` directory
 //! assert!(cfg.get("output.html").is_none());
 //! cfg.set("output.html.theme", "./themes");
-//! 
+//!
 //! // then load it again, automatically deserializing to a `PathBuf`.
-//! let got: PathBuf = cfg.get_deserialized("output.html.theme")?;
-//! assert_eq!(got, PathBuf::from("./themes"));
+//! let got: Option<PathBuf> = cfg.get_deserialized_opt("output.html.theme")?;
+//! assert_eq!(got, Some(PathBuf::from("./themes")));
 //! # Ok(())
 //! # }
 //! # fn main() { run().unwrap() }
@@ -50,19 +49,20 @@
 
 #![deny(missing_docs)]
 
-use std::path::{Path, PathBuf};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::env;
 use std::fs::File;
 use std::io::Read;
-use std::env;
-use toml::{self, Value};
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use toml::value::Table;
-use toml_query::read::TomlValueReadExt;
-use toml_query::insert::TomlValueInsertExt;
+use toml::{self, Value};
 use toml_query::delete::TomlValueDeleteExt;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_json;
+use toml_query::insert::TomlValueInsertExt;
+use toml_query::read::TomlValueReadExt;
 
-use errors::*;
+use crate::errors::*;
+use crate::utils;
 
 /// The overall configuration object for MDBook, essentially an in-memory
 /// representation of `book.toml`.
@@ -75,12 +75,16 @@ pub struct Config {
     rest: Value,
 }
 
-impl Config {
+impl FromStr for Config {
+    type Err = Error;
+
     /// Load a `Config` from some string.
-    pub fn from_str(src: &str) -> Result<Config> {
+    fn from_str(src: &str) -> Result<Self> {
         toml::from_str(src).chain_err(|| Error::from("Invalid configuration file"))
     }
+}
 
+impl Config {
     /// Load the configuration file from disk.
     pub fn from_disk<P: AsRef<Path>>(config_file: P) -> Result<Config> {
         let mut buffer = String::new();
@@ -128,10 +132,8 @@ impl Config {
     pub fn update_from_env(&mut self) {
         debug!("Updating the config from environment variables");
 
-        let overrides = env::vars().filter_map(|(key, value)| match parse_env(&key) {
-            Some(index) => Some((index, value)),
-            None => None,
-        });
+        let overrides =
+            env::vars().filter_map(|(key, value)| parse_env(&key).map(|index| (index, value)));
 
         for (key, value) in overrides {
             trace!("{} => {}", key, value);
@@ -148,14 +150,11 @@ impl Config {
     /// `output.html.playpen` will fetch the "playpen" out of the html output
     /// table).
     pub fn get(&self, key: &str) -> Option<&Value> {
-        match self.rest.read(key) {
-            Ok(inner) => inner,
-            Err(_) => None,
-        }
+        self.rest.read(key).unwrap_or(None)
     }
 
     /// Fetch a value from the `Config` so you can mutate it.
-    pub fn get_mut<'a>(&'a mut self, key: &str) -> Option<&'a mut Value> {
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut Value> {
         match self.rest.read_mut(key) {
             Ok(inner) => inner,
             Err(_) => None,
@@ -170,22 +169,41 @@ impl Config {
     /// HTML renderer is refactored to be less coupled to `mdbook` internals.
     #[doc(hidden)]
     pub fn html_config(&self) -> Option<HtmlConfig> {
-        self.get_deserialized("output.html").ok()
+        match self.get_deserialized_opt("output.html") {
+            Ok(Some(config)) => Some(config),
+            Ok(None) => None,
+            Err(e) => {
+                utils::log_backtrace(&e.chain_err(|| "Parsing configuration [output.html]"));
+                None
+            }
+        }
+    }
+
+    /// Deprecated, use get_deserialized_opt instead.
+    #[deprecated = "use get_deserialized_opt instead"]
+    pub fn get_deserialized<'de, T: Deserialize<'de>, S: AsRef<str>>(&self, name: S) -> Result<T> {
+        let name = name.as_ref();
+        match self.get_deserialized_opt(name)? {
+            Some(value) => Ok(value),
+            None => bail!("Key not found, {:?}", name),
+        }
     }
 
     /// Convenience function to fetch a value from the config and deserialize it
     /// into some arbitrary type.
-    pub fn get_deserialized<'de, T: Deserialize<'de>, S: AsRef<str>>(&self, name: S) -> Result<T> {
+    pub fn get_deserialized_opt<'de, T: Deserialize<'de>, S: AsRef<str>>(
+        &self,
+        name: S,
+    ) -> Result<Option<T>> {
         let name = name.as_ref();
-
-        if let Some(value) = self.get(name) {
-            value
-                .clone()
-                .try_into()
-                .chain_err(|| "Couldn't deserialize the value")
-        } else {
-            bail!("Key not found, {:?}", name)
-        }
+        self.get(name)
+            .map(|value| {
+                value
+                    .clone()
+                    .try_into()
+                    .chain_err(|| "Couldn't deserialize the value")
+            })
+            .transpose()
     }
 
     /// Set a config key, clobbering any existing values along the way.
@@ -203,10 +221,24 @@ impl Config {
         } else if index.starts_with("build.") {
             self.build.update_value(&index[6..], value);
         } else {
-            self.rest.insert(index, value)?;
+            self.rest
+                .insert(index, value)
+                .map_err(ErrorKind::TomlQueryError)?;
         }
 
         Ok(())
+    }
+
+    /// Get the table associated with a particular renderer.
+    pub fn get_renderer<I: AsRef<str>>(&self, index: I) -> Option<&Table> {
+        let key = format!("output.{}", index.as_ref());
+        self.get(&key).and_then(Value::as_table)
+    }
+
+    /// Get the table associated with a particular preprocessor.
+    pub fn get_preprocessor<I: AsRef<str>>(&self, index: I) -> Option<&Table> {
+        let key = format!("preprocessor.{}", index.as_ref());
+        self.get(&key).and_then(Value::as_table)
     }
 
     fn from_legacy(mut table: Value) -> Config {
@@ -217,9 +249,10 @@ impl Config {
         // figure out what try_into() deserializes to.
         macro_rules! get_and_insert {
             ($table:expr, $key:expr => $out:expr) => {
-                let got = $table.as_table_mut()
-                                .and_then(|t| t.remove($key))
-                                .and_then(|v| v.try_into().ok());
+                let got = $table
+                    .as_table_mut()
+                    .and_then(|t| t.remove($key))
+                    .and_then(|v| v.try_into().ok());
                 if let Some(value) = got {
                     $out = value;
                 }
@@ -252,7 +285,7 @@ impl Default for Config {
     }
 }
 impl<'de> Deserialize<'de> for Config {
-    fn deserialize<D: Deserializer<'de>>(de: D) -> ::std::result::Result<Self, D::Error> {
+    fn deserialize<D: Deserializer<'de>>(de: D) -> std::result::Result<Self, D::Error> {
         let raw = Value::deserialize(de)?;
 
         if is_legacy_format(&raw) {
@@ -288,15 +321,15 @@ impl<'de> Deserialize<'de> for Config {
             .unwrap_or_default();
 
         Ok(Config {
-            book: book,
-            build: build,
+            book,
+            build,
             rest: Value::Table(table),
         })
     }
 }
 
 impl Serialize for Config {
-    fn serialize<S: Serializer>(&self, s: S) -> ::std::result::Result<S::Ok, S::Error> {
+    fn serialize<S: Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
         use serde::ser::Error;
 
         let mut table = self.rest.clone();
@@ -358,6 +391,8 @@ pub struct BookConfig {
     pub src: PathBuf,
     /// Does this book support more than one language?
     pub multilingual: bool,
+    /// The main language of the book.
+    pub language: Option<String>,
 }
 
 impl Default for BookConfig {
@@ -368,6 +403,7 @@ impl Default for BookConfig {
             description: None,
             src: PathBuf::from("src"),
             multilingual: false,
+            language: Some(String::from("en")),
         }
     }
 }
@@ -381,9 +417,9 @@ pub struct BuildConfig {
     /// Should non-existent markdown files specified in `SETTINGS.md` be created
     /// if they don't exist?
     pub create_missing: bool,
-    /// Which preprocessors should be applied
-    pub preprocess: Option<Vec<String>>,
-
+    /// Should the default preprocessors always be used when they are
+    /// compatible with the renderer?
+    pub use_default_preprocessors: bool,
 }
 
 impl Default for BuildConfig {
@@ -391,7 +427,7 @@ impl Default for BuildConfig {
         BuildConfig {
             build_dir: PathBuf::from("book"),
             create_missing: true,
-            preprocess: None,
+            use_default_preprocessors: true,
         }
     }
 }
@@ -402,6 +438,11 @@ impl Default for BuildConfig {
 pub struct HtmlConfig {
     /// The theme directory, if specified.
     pub theme: Option<PathBuf>,
+    /// The default theme to use, defaults to 'light'
+    pub default_theme: Option<String>,
+    /// The theme to use if the browser requests the dark version of the site.
+    /// Defaults to the same as 'default_theme'
+    pub preferred_dark_theme: Option<String>,
     /// Use "smart quotes" instead of the usual `"` character.
     pub curly_quotes: bool,
     /// Should mathjax be enabled?
@@ -410,11 +451,22 @@ pub struct HtmlConfig {
     pub google_analytics: Option<String>,
     /// Additional CSS stylesheets to include in the rendered page's `<head>`.
     pub additional_css: Vec<PathBuf>,
-    /// Additional JS scripts to include at the bottom of the rendered page's 
+    /// Additional JS scripts to include at the bottom of the rendered page's
     /// `<body>`.
     pub additional_js: Vec<PathBuf>,
+    /// Fold settings.
+    pub fold: Fold,
     /// Playpen settings.
     pub playpen: Playpen,
+    /// Don't render section labels.
+    pub no_section_label: bool,
+    /// Search settings. If `None`, the default will be used.
+    pub search: Option<Search>,
+    /// Git repository url. If `None`, the git button will not be shown.
+    pub git_repository_url: Option<String>,
+    /// FontAwesome icon class to use for the Git repository link.
+    /// Defaults to `fa-github` if `None`.
+    pub git_repository_icon: Option<String>,
     /// This is used as a bit of a workaround for the `mdbook serve` command.
     /// Basically, because you set the websocket port from the command line, the
     /// `mdbook serve` command needs a way to let the HTML renderer know where
@@ -423,27 +475,104 @@ pub struct HtmlConfig {
     /// This config item *should not be edited* by the end user.
     #[doc(hidden)]
     pub livereload_url: Option<String>,
-    /// Should section labels be rendered?
-    pub no_section_label: bool,
+}
+
+impl HtmlConfig {
+    /// Returns the directory of theme from the provided root directory. If the
+    /// directory is not present it will append the default directory of "theme"
+    pub fn theme_dir(&self, root: &PathBuf) -> PathBuf {
+        match self.theme {
+            Some(ref d) => root.join(d),
+            None => root.join("theme"),
+        }
+    }
+}
+
+/// Configuration for how to fold chapters of sidebar.
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct Fold {
+    /// When off, all folds are open. Default: `false`.
+    pub enable: bool,
+    /// The higher the more folded regions are open. When level is 0, all folds
+    /// are closed.
+    /// Default: `0`.
+    pub level: u8,
 }
 
 /// Configuration for tweaking how the the HTML renderer handles the playpen.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Playpen {
-    /// The path to the editor to use. Defaults to the [Ace Editor].
-    /// 
-    /// [Ace Editor]: https://ace.c9.io/
-    pub editor: PathBuf,
-    /// Should playpen snippets be editable? Defaults to `false`.
+    /// Should playpen snippets be editable? Default: `false`.
     pub editable: bool,
+    /// Display the copy button. Default: `true`.
+    pub copyable: bool,
+    /// Copy JavaScript files for the editor to the output directory?
+    /// Default: `true`.
+    pub copy_js: bool,
+    /// Display line numbers on playpen snippets. Default: `false`.
+    pub line_numbers: bool,
 }
 
 impl Default for Playpen {
     fn default() -> Playpen {
         Playpen {
-            editor: PathBuf::from("ace"),
             editable: false,
+            copyable: true,
+            copy_js: true,
+            line_numbers: false,
+        }
+    }
+}
+
+/// Configuration of the search functionality of the HTML renderer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct Search {
+    /// Enable the search feature. Default: `true`.
+    pub enable: bool,
+    /// Maximum number of visible results. Default: `30`.
+    pub limit_results: u32,
+    /// The number of words used for a search result teaser. Default: `30`.
+    pub teaser_word_count: u32,
+    /// Define the logical link between multiple search words.
+    /// If true, all search words must appear in each result. Default: `false`.
+    pub use_boolean_and: bool,
+    /// Boost factor for the search result score if a search word appears in the header.
+    /// Default: `2`.
+    pub boost_title: u8,
+    /// Boost factor for the search result score if a search word appears in the hierarchy.
+    /// The hierarchy contains all titles of the parent documents and all parent headings.
+    /// Default: `1`.
+    pub boost_hierarchy: u8,
+    /// Boost factor for the search result score if a search word appears in the text.
+    /// Default: `1`.
+    pub boost_paragraph: u8,
+    /// True if the searchword `micro` should match `microwave`. Default: `true`.
+    pub expand: bool,
+    /// Documents are split into smaller parts, seperated by headings. This defines, until which
+    /// level of heading documents should be split. Default: `3`. (`### This is a level 3 heading`)
+    pub heading_split_level: u8,
+    /// Copy JavaScript files for the search functionality to the output directory?
+    /// Default: `true`.
+    pub copy_js: bool,
+}
+
+impl Default for Search {
+    fn default() -> Search {
+        // Please update the documentation of `Search` when changing values!
+        Search {
+            enable: true,
+            limit_results: 30,
+            teaser_word_count: 30,
+            use_boolean_and: false,
+            boost_title: 2,
+            boost_hierarchy: 1,
+            boost_paragraph: 1,
+            expand: true,
+            heading_split_level: 3,
+            copy_js: true,
         }
     }
 }
@@ -457,12 +586,10 @@ trait Updateable<'de>: Serialize + Deserialize<'de> {
     fn update_value<S: Serialize>(&mut self, key: &str, value: S) {
         let mut raw = Value::try_from(&self).expect("unreachable");
 
-        {
-            if let Ok(value) = Value::try_from(value) {
-                let _ = raw.insert(key, value);
-            } else {
-                return;
-            }
+        if let Ok(value) = Value::try_from(value) {
+            let _ = raw.insert(key, value);
+        } else {
+            return;
         }
 
         if let Ok(updated) = raw.try_into() {
@@ -471,38 +598,42 @@ trait Updateable<'de>: Serialize + Deserialize<'de> {
     }
 }
 
-impl<'de, T> Updateable<'de> for T
-where
-    T: Serialize + Deserialize<'de>,
-{
-}
+impl<'de, T> Updateable<'de> for T where T: Serialize + Deserialize<'de> {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const COMPLEX_CONFIG: &'static str = r#"
+    const COMPLEX_CONFIG: &str = r#"
         [book]
         title = "Some Book"
         authors = ["Michael-F-Bryan <michaelfbryan@gmail.com>"]
         description = "A completely useless book"
         multilingual = true
         src = "source"
+        language = "ja"
 
         [build]
         build-dir = "outputs"
         create-missing = false
-        preprocess = ["first_preprocessor", "second_preprocessor"]
+        use-default-preprocessors = true
 
         [output.html]
         theme = "./themedir"
+        default-theme = "rust"
         curly-quotes = true
         google-analytics = "123456"
         additional-css = ["./foo/bar/baz.css"]
+        git-repository-url = "https://foo.com/"
+        git-repository-icon = "fa-code-fork"
 
         [output.html.playpen]
         editable = true
         editor = "ace"
+
+        [preprocessor.first]
+
+        [preprocessor.second]
         "#;
 
     #[test]
@@ -515,24 +646,28 @@ mod tests {
             description: Some(String::from("A completely useless book")),
             multilingual: true,
             src: PathBuf::from("source"),
-            ..Default::default()
+            language: Some(String::from("ja")),
         };
         let build_should_be = BuildConfig {
             build_dir: PathBuf::from("outputs"),
             create_missing: false,
-            preprocess: Some(vec!["first_preprocessor".to_string(),
-                                  "second_preprocessor".to_string()]),
+            use_default_preprocessors: true,
         };
         let playpen_should_be = Playpen {
             editable: true,
-            editor: PathBuf::from("ace"),
+            copyable: true,
+            copy_js: true,
+            line_numbers: false,
         };
         let html_should_be = HtmlConfig {
             curly_quotes: true,
             google_analytics: Some(String::from("123456")),
             additional_css: vec![PathBuf::from("./foo/bar/baz.css")],
             theme: Some(PathBuf::from("./themedir")),
+            default_theme: Some(String::from("rust")),
             playpen: playpen_should_be,
+            git_repository_url: Some(String::from("https://foo.com/")),
+            git_repository_icon: Some(String::from("fa-code-fork")),
             ..Default::default()
         };
 
@@ -566,14 +701,17 @@ mod tests {
         };
 
         let cfg = Config::from_str(src).unwrap();
-        let got: RandomOutput = cfg.get_deserialized("output.random").unwrap();
+        let got: RandomOutput = cfg.get_deserialized_opt("output.random").unwrap().unwrap();
 
         assert_eq!(got, should_be);
 
-        let baz: Vec<bool> = cfg.get_deserialized("output.random.baz").unwrap();
+        let got_baz: Vec<bool> = cfg
+            .get_deserialized_opt("output.random.baz")
+            .unwrap()
+            .unwrap();
         let baz_should_be = vec![true, true, false];
 
-        assert_eq!(baz, baz_should_be);
+        assert_eq!(got_baz, baz_should_be);
     }
 
     #[test]
@@ -623,7 +761,7 @@ mod tests {
         let build_should_be = BuildConfig {
             build_dir: PathBuf::from("my-book"),
             create_missing: true,
-            preprocess: None,
+            use_default_preprocessors: true,
         };
 
         let html_should_be = HtmlConfig {
@@ -650,7 +788,7 @@ mod tests {
         assert!(cfg.get(key).is_none());
         cfg.set(key, value).unwrap();
 
-        let got: String = cfg.get_deserialized(key).unwrap();
+        let got: String = cfg.get_deserialized_opt(key).unwrap().unwrap();
         assert_eq!(got, value);
     }
 
@@ -665,7 +803,7 @@ mod tests {
 
         for (src, should_be) in inputs {
             let got = parse_env(src);
-            let should_be = should_be.map(|s| s.to_string());
+            let should_be = should_be.map(ToString::to_string);
 
             assert_eq!(got, should_be);
         }
@@ -691,10 +829,14 @@ mod tests {
 
         cfg.update_from_env();
 
-        assert_eq!(cfg.get_deserialized::<String, _>(key).unwrap(), value);
+        assert_eq!(
+            cfg.get_deserialized_opt::<String, _>(key).unwrap().unwrap(),
+            value
+        );
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn update_config_using_env_var_and_complex_value() {
         let mut cfg = Config::default();
         let key = "foo-bar.baz";
@@ -709,7 +851,9 @@ mod tests {
         cfg.update_from_env();
 
         assert_eq!(
-            cfg.get_deserialized::<serde_json::Value, _>(key).unwrap(),
+            cfg.get_deserialized_opt::<serde_json::Value, _>(key)
+                .unwrap()
+                .unwrap(),
             value
         );
     }

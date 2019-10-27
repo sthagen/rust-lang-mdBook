@@ -5,26 +5,29 @@
 //!
 //! [1]: ../index.html
 
-mod summary;
 mod book;
 mod init;
+mod summary;
 
 pub use self::book::{load_book, Book, BookItem, BookItems, Chapter};
-pub use self::summary::{parse_summary, Link, SectionNumber, Summary, SummaryItem};
 pub use self::init::BookBuilder;
+pub use self::summary::{parse_summary, Link, SectionNumber, Summary, SummaryItem};
 
-use std::path::PathBuf;
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::Command;
-use tempdir::TempDir;
+use std::string::ToString;
+use tempfile::Builder as TempFileBuilder;
 use toml::Value;
 
-use utils;
-use renderer::{CmdRenderer, HtmlHandlebars, RenderContext, Renderer};
-use preprocess::{LinkPreprocessor, Preprocessor, PreprocessorContext};
-use errors::*;
+use crate::errors::*;
+use crate::preprocess::{
+    CmdPreprocessor, IndexPreprocessor, LinkPreprocessor, Preprocessor, PreprocessorContext,
+};
+use crate::renderer::{CmdRenderer, HtmlHandlebars, MarkdownRenderer, RenderContext, Renderer};
+use crate::utils;
 
-use config::Config;
+use crate::config::Config;
 
 /// The object used to manage and build a book.
 pub struct MDBook {
@@ -34,10 +37,10 @@ pub struct MDBook {
     pub config: Config,
     /// A representation of the book's contents in memory.
     pub book: Book,
-    renderers: Vec<Box<Renderer>>,
+    renderers: Vec<Box<dyn Renderer>>,
 
     /// List of pre-processors to be run on the book
-    preprocessors: Vec<Box<Preprocessor>>,
+    preprocessors: Vec<Box<dyn Preprocessor>>,
 }
 
 impl MDBook {
@@ -65,7 +68,7 @@ impl MDBook {
 
         config.update_from_env();
 
-        if log_enabled!(::log::Level::Trace) {
+        if log_enabled!(log::Level::Trace) {
             for line in format!("Config: {:#?}", config).lines() {
                 trace!("{}", line);
             }
@@ -93,12 +96,34 @@ impl MDBook {
         })
     }
 
+    /// Load a book from its root directory using a custom config and a custom summary.
+    pub fn load_with_config_and_summary<P: Into<PathBuf>>(
+        book_root: P,
+        config: Config,
+        summary: Summary,
+    ) -> Result<MDBook> {
+        let root = book_root.into();
+
+        let src_dir = root.join(&config.book.src);
+        let book = book::load_book_from_disk(&summary, &src_dir)?;
+
+        let renderers = determine_renderers(&config);
+        let preprocessors = determine_preprocessors(&config)?;
+
+        Ok(MDBook {
+            root,
+            config,
+            book,
+            renderers,
+            preprocessors,
+        })
+    }
+
     /// Returns a flat depth-first iterator over the elements of the book,
     /// it returns an [BookItem enum](bookitem.html):
     /// `(section: String, bookitem: &BookItem)`
     ///
     /// ```no_run
-    /// # extern crate mdbook;
     /// # use mdbook::MDBook;
     /// # use mdbook::book::BookItem;
     /// # #[allow(unused_variables)]
@@ -120,7 +145,7 @@ impl MDBook {
     /// // etc.
     /// # }
     /// ```
-    pub fn iter(&self) -> BookItems {
+    pub fn iter(&self) -> BookItems<'_> {
         self.book.iter()
     }
 
@@ -149,35 +174,38 @@ impl MDBook {
     pub fn build(&self) -> Result<()> {
         info!("Book building has started");
 
-        let mut preprocessed_book = self.book.clone();
-        let preprocess_ctx = PreprocessorContext::new(self.root.clone(), self.config.clone());
-
-        for preprocessor in &self.preprocessors {
-            debug!("Running the {} preprocessor.", preprocessor.name());
-            preprocessor.run(&preprocess_ctx, &mut preprocessed_book)?;
-        }
-
         for renderer in &self.renderers {
-            info!("Running the {} backend", renderer.name());
-            self.run_renderer(&preprocessed_book, renderer.as_ref())?;
+            self.execute_build_process(&**renderer)?;
         }
 
         Ok(())
     }
 
-    fn run_renderer(&self, preprocessed_book: &Book, renderer: &Renderer) -> Result<()> {
+    /// Run the entire build process for a particular `Renderer`.
+    fn execute_build_process(&self, renderer: &dyn Renderer) -> Result<()> {
+        let mut preprocessed_book = self.book.clone();
+        let preprocess_ctx = PreprocessorContext::new(
+            self.root.clone(),
+            self.config.clone(),
+            renderer.name().to_string(),
+        );
+
+        for preprocessor in &self.preprocessors {
+            if preprocessor_should_run(&**preprocessor, renderer, &self.config) {
+                debug!("Running the {} preprocessor.", preprocessor.name());
+                preprocessed_book = preprocessor.run(&preprocess_ctx, preprocessed_book)?;
+            }
+        }
+
+        info!("Running the {} backend", renderer.name());
+        self.render(&preprocessed_book, renderer)?;
+
+        Ok(())
+    }
+
+    fn render(&self, preprocessed_book: &Book, renderer: &dyn Renderer) -> Result<()> {
         let name = renderer.name();
         let build_dir = self.build_dir_for(name);
-        if build_dir.exists() {
-            debug!(
-                "Cleaning build dir for the \"{}\" renderer ({})",
-                name,
-                build_dir.display()
-            );
-
-            utils::fs::remove_dir_content(&build_dir)
-                .chain_err(|| "Unable to clear output directory")?;
-        }
 
         let render_context = RenderContext::new(
             self.root.clone(),
@@ -200,7 +228,7 @@ impl MDBook {
     }
 
     /// Register a [`Preprocessor`](../preprocess/trait.Preprocessor.html) to be used when rendering the book.
-    pub fn with_preprecessor<P: Preprocessor + 'static>(&mut self, preprocessor: P) -> &mut Self {
+    pub fn with_preprocessor<P: Preprocessor + 'static>(&mut self, preprocessor: P) -> &mut Self {
         self.preprocessors.push(Box::new(preprocessor));
         self
     }
@@ -213,23 +241,26 @@ impl MDBook {
             .flat_map(|x| vec![x.0, x.1])
             .collect();
 
-        let temp_dir = TempDir::new("mdbook")?;
+        let temp_dir = TempFileBuilder::new().prefix("mdbook-").tempdir()?;
 
-        let preprocess_context = PreprocessorContext::new(self.root.clone(), self.config.clone());
+        // FIXME: Is "test" the proper renderer name to use here?
+        let preprocess_context =
+            PreprocessorContext::new(self.root.clone(), self.config.clone(), "test".to_string());
 
-        LinkPreprocessor::new().run(&preprocess_context, &mut self.book)?;
+        let book = LinkPreprocessor::new().run(&preprocess_context, self.book.clone())?;
+        // Index Preprocessor is disabled so that chapter paths continue to point to the
+        // actual markdown files.
 
-        for item in self.iter() {
+        for item in book.iter() {
             if let BookItem::Chapter(ref ch) = *item {
                 if !ch.path.as_os_str().is_empty() {
                     let path = self.source_dir().join(&ch.path);
-                    let content = utils::fs::file_to_string(&path)?;
                     info!("Testing file: {:?}", path);
 
                     // write preprocessed file to tempdir
                     let path = temp_dir.path().join(&ch.path);
                     let mut tmpf = utils::fs::create_file(&path)?;
-                    tmpf.write_all(content.as_bytes())?;
+                    tmpf.write_all(ch.content.as_bytes())?;
 
                     let output = Command::new("rustdoc")
                         .arg(&path)
@@ -288,30 +319,29 @@ impl MDBook {
         self.root.join(&self.config.book.src)
     }
 
-    // FIXME: This really belongs as part of the `HtmlConfig`.
-    #[doc(hidden)]
+    /// Get the directory containing the theme resources for the book.
     pub fn theme_dir(&self) -> PathBuf {
-        match self.config.html_config().and_then(|h| h.theme) {
-            Some(d) => self.root.join(d),
-            None => self.root.join("theme"),
-        }
+        self.config
+            .html_config()
+            .unwrap_or_default()
+            .theme_dir(&self.root)
     }
 }
 
 /// Look at the `Config` and try to figure out what renderers to use.
-fn determine_renderers(config: &Config) -> Vec<Box<Renderer>> {
-    let mut renderers: Vec<Box<Renderer>> = Vec::new();
+fn determine_renderers(config: &Config) -> Vec<Box<dyn Renderer>> {
+    let mut renderers = Vec::new();
 
-    if let Some(output_table) = config.get("output").and_then(|o| o.as_table()) {
-        for (key, table) in output_table.iter() {
-            // the "html" backend has its own Renderer
+    if let Some(output_table) = config.get("output").and_then(Value::as_table) {
+        renderers.extend(output_table.iter().map(|(key, table)| {
             if key == "html" {
-                renderers.push(Box::new(HtmlHandlebars::new()));
+                Box::new(HtmlHandlebars::new()) as Box<dyn Renderer>
+            } else if key == "markdown" {
+                Box::new(MarkdownRenderer::new()) as Box<dyn Renderer>
             } else {
-                let renderer = interpret_custom_renderer(key, table);
-                renderers.push(renderer);
+                interpret_custom_renderer(key, table)
             }
-        }
+        }));
     }
 
     // if we couldn't find anything, add the HTML renderer as a default
@@ -322,47 +352,98 @@ fn determine_renderers(config: &Config) -> Vec<Box<Renderer>> {
     renderers
 }
 
-fn default_preprocessors() -> Vec<Box<Preprocessor>> {
-    vec![Box::new(LinkPreprocessor::new())]
+fn default_preprocessors() -> Vec<Box<dyn Preprocessor>> {
+    vec![
+        Box::new(LinkPreprocessor::new()),
+        Box::new(IndexPreprocessor::new()),
+    ]
+}
+
+fn is_default_preprocessor(pre: &dyn Preprocessor) -> bool {
+    let name = pre.name();
+    name == LinkPreprocessor::NAME || name == IndexPreprocessor::NAME
 }
 
 /// Look at the `MDBook` and try to figure out what preprocessors to run.
-fn determine_preprocessors(config: &Config) -> Result<Vec<Box<Preprocessor>>> {
-    let preprocess_list = match config.build.preprocess {
-        Some(ref p) => p,
-        // If no preprocessor field is set, default to the LinkPreprocessor. This allows you
-        // to disable the LinkPreprocessor by setting "preprocess" to an empty list.
-        None => return Ok(default_preprocessors()),
-    };
+fn determine_preprocessors(config: &Config) -> Result<Vec<Box<dyn Preprocessor>>> {
+    let mut preprocessors = Vec::new();
 
-    let mut preprocessors: Vec<Box<Preprocessor>> = Vec::new();
+    if config.build.use_default_preprocessors {
+        preprocessors.extend(default_preprocessors());
+    }
 
-    for key in preprocess_list {
-        match key.as_ref() {
-            "links" => preprocessors.push(Box::new(LinkPreprocessor::new())),
-            _ => bail!("{:?} is not a recognised preprocessor", key),
+    if let Some(preprocessor_table) = config.get("preprocessor").and_then(Value::as_table) {
+        for key in preprocessor_table.keys() {
+            match key.as_ref() {
+                "links" => preprocessors.push(Box::new(LinkPreprocessor::new())),
+                "index" => preprocessors.push(Box::new(IndexPreprocessor::new())),
+                name => preprocessors.push(interpret_custom_preprocessor(
+                    name,
+                    &preprocessor_table[name],
+                )),
+            }
         }
     }
 
     Ok(preprocessors)
 }
 
-fn interpret_custom_renderer(key: &str, table: &Value) -> Box<Renderer> {
+fn interpret_custom_preprocessor(key: &str, table: &Value) -> Box<CmdPreprocessor> {
+    let command = table
+        .get("command")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .unwrap_or_else(|| format!("mdbook-{}", key));
+
+    Box::new(CmdPreprocessor::new(key.to_string(), command.to_string()))
+}
+
+fn interpret_custom_renderer(key: &str, table: &Value) -> Box<CmdRenderer> {
     // look for the `command` field, falling back to using the key
     // prepended by "mdbook-"
     let table_dot_command = table
         .get("command")
-        .and_then(|c| c.as_str())
-        .map(|s| s.to_string());
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
 
     let command = table_dot_command.unwrap_or_else(|| format!("mdbook-{}", key));
 
     Box::new(CmdRenderer::new(key.to_string(), command.to_string()))
 }
 
+/// Check whether we should run a particular `Preprocessor` in combination
+/// with the renderer, falling back to `Preprocessor::supports_renderer()`
+/// method if the user doesn't say anything.
+///
+/// The `build.use-default-preprocessors` config option can be used to ensure
+/// default preprocessors always run if they support the renderer.
+fn preprocessor_should_run(
+    preprocessor: &dyn Preprocessor,
+    renderer: &dyn Renderer,
+    cfg: &Config,
+) -> bool {
+    // default preprocessors should be run by default (if supported)
+    if cfg.build.use_default_preprocessors && is_default_preprocessor(preprocessor) {
+        return preprocessor.supports_renderer(renderer.name());
+    }
+
+    let key = format!("preprocessor.{}.renderers", preprocessor.name());
+    let renderer_name = renderer.name();
+
+    if let Some(Value::Array(ref explicit_renderers)) = cfg.get(&key) {
+        return explicit_renderers
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|name| name == renderer_name);
+    }
+
+    preprocessor.supports_renderer(renderer_name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
     use toml::value::{Table, Value};
 
     #[test]
@@ -404,61 +485,120 @@ mod tests {
     }
 
     #[test]
-    fn config_defaults_to_link_preprocessor_if_not_set() {
+    fn config_defaults_to_link_and_index_preprocessor_if_not_set() {
         let cfg = Config::default();
 
-        // make sure we haven't got anything in the `output` table
-        assert!(cfg.build.preprocess.is_none());
+        // make sure we haven't got anything in the `preprocessor` table
+        assert!(cfg.get("preprocessor").is_none());
 
         let got = determine_preprocessors(&cfg);
 
         assert!(got.is_ok());
-        assert_eq!(got.as_ref().unwrap().len(), 1);
+        assert_eq!(got.as_ref().unwrap().len(), 2);
         assert_eq!(got.as_ref().unwrap()[0].name(), "links");
+        assert_eq!(got.as_ref().unwrap()[1].name(), "index");
     }
 
     #[test]
-    fn config_doesnt_default_if_empty() {
-        let cfg_str: &'static str = r#"
+    fn use_default_preprocessors_works() {
+        let mut cfg = Config::default();
+        cfg.build.use_default_preprocessors = false;
+
+        let got = determine_preprocessors(&cfg).unwrap();
+
+        assert_eq!(got.len(), 0);
+    }
+
+    #[test]
+    fn can_determine_third_party_preprocessors() {
+        let cfg_str = r#"
         [book]
         title = "Some Book"
+
+        [preprocessor.random]
 
         [build]
         build-dir = "outputs"
         create-missing = false
-        preprocess = []
         "#;
 
         let cfg = Config::from_str(cfg_str).unwrap();
 
-        // make sure we have something in the `output` table
-        assert!(cfg.build.preprocess.is_some());
+        // make sure the `preprocessor.random` table exists
+        assert!(cfg.get_preprocessor("random").is_some());
 
-        let got = determine_preprocessors(&cfg);
+        let got = determine_preprocessors(&cfg).unwrap();
 
-        assert!(got.is_ok());
-        assert!(got.unwrap().is_empty());
+        assert!(got.into_iter().any(|p| p.name() == "random"));
     }
 
     #[test]
-    fn config_complains_if_unimplemented_preprocessor() {
-        let cfg_str: &'static str = r#"
-        [book]
-        title = "Some Book"
-
-        [build]
-        build-dir = "outputs"
-        create-missing = false
-        preprocess = ["random"]
+    fn preprocessors_can_provide_their_own_commands() {
+        let cfg_str = r#"
+        [preprocessor.random]
+        command = "python random.py"
         "#;
 
         let cfg = Config::from_str(cfg_str).unwrap();
 
-        // make sure we have something in the `output` table
-        assert!(cfg.build.preprocess.is_some());
+        // make sure the `preprocessor.random` table exists
+        let random = cfg.get_preprocessor("random").unwrap();
+        let random = interpret_custom_preprocessor("random", &Value::Table(random.clone()));
 
-        let got = determine_preprocessors(&cfg);
+        assert_eq!(random.cmd(), "python random.py");
+    }
 
-        assert!(got.is_err());
+    #[test]
+    fn config_respects_preprocessor_selection() {
+        let cfg_str = r#"
+        [preprocessor.links]
+        renderers = ["html"]
+        "#;
+
+        let cfg = Config::from_str(cfg_str).unwrap();
+
+        // double-check that we can access preprocessor.links.renderers[0]
+        let html = cfg
+            .get_preprocessor("links")
+            .and_then(|links| links.get("renderers"))
+            .and_then(Value::as_array)
+            .and_then(|renderers| renderers.get(0))
+            .and_then(Value::as_str)
+            .unwrap();
+        assert_eq!(html, "html");
+        let html_renderer = HtmlHandlebars::default();
+        let pre = LinkPreprocessor::new();
+
+        let should_run = preprocessor_should_run(&pre, &html_renderer, &cfg);
+        assert!(should_run);
+    }
+
+    struct BoolPreprocessor(bool);
+    impl Preprocessor for BoolPreprocessor {
+        fn name(&self) -> &str {
+            "bool-preprocessor"
+        }
+
+        fn run(&self, _ctx: &PreprocessorContext, _book: Book) -> Result<Book> {
+            unimplemented!()
+        }
+
+        fn supports_renderer(&self, _renderer: &str) -> bool {
+            self.0
+        }
+    }
+
+    #[test]
+    fn preprocessor_should_run_falls_back_to_supports_renderer_method() {
+        let cfg = Config::default();
+        let html = HtmlHandlebars::new();
+
+        let should_be = true;
+        let got = preprocessor_should_run(&BoolPreprocessor(should_be), &html, &cfg);
+        assert_eq!(got, should_be);
+
+        let should_be = false;
+        let got = preprocessor_should_run(&BoolPreprocessor(should_be), &html, &cfg);
+        assert_eq!(got, should_be);
     }
 }

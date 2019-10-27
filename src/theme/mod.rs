@@ -1,38 +1,40 @@
-#![allow(missing_docs)] // FIXME: Document this
+#![allow(missing_docs)]
+
 pub mod playpen_editor;
 
-use std::path::Path;
+#[cfg(feature = "search")]
+pub mod searcher;
+
 use std::fs::File;
 use std::io::Read;
+use std::path::Path;
 
-use errors::*;
+use crate::errors::*;
 
-pub static INDEX: &'static [u8] = include_bytes!("index.hbs");
-pub static HEADER: &'static [u8] = include_bytes!("header.hbs");
-pub static CSS: &'static [u8] = include_bytes!("book.css");
-pub static FAVICON: &'static [u8] = include_bytes!("favicon.png");
-pub static JS: &'static [u8] = include_bytes!("book.js");
-pub static HIGHLIGHT_JS: &'static [u8] = include_bytes!("highlight.js");
-pub static TOMORROW_NIGHT_CSS: &'static [u8] = include_bytes!("tomorrow-night.css");
-pub static HIGHLIGHT_CSS: &'static [u8] = include_bytes!("highlight.css");
-pub static AYU_HIGHLIGHT_CSS: &'static [u8] = include_bytes!("ayu-highlight.css");
-pub static CLIPBOARD_JS: &'static [u8] = include_bytes!("clipboard.min.js");
-pub static FONT_AWESOME: &'static [u8] = include_bytes!("_FontAwesome/css/font-awesome.min.css");
-pub static FONT_AWESOME_EOT: &'static [u8] =
-    include_bytes!("_FontAwesome/fonts/fontawesome-webfont.eot");
-pub static FONT_AWESOME_SVG: &'static [u8] =
-    include_bytes!("_FontAwesome/fonts/fontawesome-webfont.svg");
-pub static FONT_AWESOME_TTF: &'static [u8] =
-    include_bytes!("_FontAwesome/fonts/fontawesome-webfont.ttf");
-pub static FONT_AWESOME_WOFF: &'static [u8] =
-    include_bytes!("_FontAwesome/fonts/fontawesome-webfont.woff");
-pub static FONT_AWESOME_WOFF2: &'static [u8] =
-    include_bytes!("_FontAwesome/fonts/fontawesome-webfont.woff2");
-pub static FONT_AWESOME_OTF: &'static [u8] = include_bytes!("_FontAwesome/fonts/FontAwesome.otf");
-
+pub static INDEX: &[u8] = include_bytes!("index.hbs");
+pub static HEADER: &[u8] = include_bytes!("header.hbs");
+pub static CHROME_CSS: &[u8] = include_bytes!("css/chrome.css");
+pub static GENERAL_CSS: &[u8] = include_bytes!("css/general.css");
+pub static PRINT_CSS: &[u8] = include_bytes!("css/print.css");
+pub static VARIABLES_CSS: &[u8] = include_bytes!("css/variables.css");
+pub static FAVICON: &[u8] = include_bytes!("favicon.png");
+pub static JS: &[u8] = include_bytes!("book.js");
+pub static HIGHLIGHT_JS: &[u8] = include_bytes!("highlight.js");
+pub static TOMORROW_NIGHT_CSS: &[u8] = include_bytes!("tomorrow-night.css");
+pub static HIGHLIGHT_CSS: &[u8] = include_bytes!("highlight.css");
+pub static AYU_HIGHLIGHT_CSS: &[u8] = include_bytes!("ayu-highlight.css");
+pub static CLIPBOARD_JS: &[u8] = include_bytes!("clipboard.min.js");
+pub static FONT_AWESOME: &[u8] = include_bytes!("FontAwesome/css/font-awesome.min.css");
+pub static FONT_AWESOME_EOT: &[u8] = include_bytes!("FontAwesome/fonts/fontawesome-webfont.eot");
+pub static FONT_AWESOME_SVG: &[u8] = include_bytes!("FontAwesome/fonts/fontawesome-webfont.svg");
+pub static FONT_AWESOME_TTF: &[u8] = include_bytes!("FontAwesome/fonts/fontawesome-webfont.ttf");
+pub static FONT_AWESOME_WOFF: &[u8] = include_bytes!("FontAwesome/fonts/fontawesome-webfont.woff");
+pub static FONT_AWESOME_WOFF2: &[u8] =
+    include_bytes!("FontAwesome/fonts/fontawesome-webfont.woff2");
+pub static FONT_AWESOME_OTF: &[u8] = include_bytes!("FontAwesome/fonts/FontAwesome.otf");
 
 /// The `Theme` struct should be used instead of the static variables because
-/// the `new()` method will look if the user has a theme directory in his
+/// the `new()` method will look if the user has a theme directory in their
 /// source folder and use the users theme instead of the default.
 ///
 /// You should only ever use the static variables directly if you want to
@@ -41,7 +43,10 @@ pub static FONT_AWESOME_OTF: &'static [u8] = include_bytes!("_FontAwesome/fonts/
 pub struct Theme {
     pub index: Vec<u8>,
     pub header: Vec<u8>,
-    pub css: Vec<u8>,
+    pub chrome_css: Vec<u8>,
+    pub general_css: Vec<u8>,
+    pub print_css: Vec<u8>,
+    pub variables_css: Vec<u8>,
     pub favicon: Vec<u8>,
     pub js: Vec<u8>,
     pub highlight_css: Vec<u8>,
@@ -52,6 +57,8 @@ pub struct Theme {
 }
 
 impl Theme {
+    /// Creates a `Theme` from the given `theme_dir`.
+    /// If a file is found in the theme dir, it will override the default version.
     pub fn new<P: AsRef<Path>>(theme_dir: P) -> Self {
         let theme_dir = theme_dir.as_ref();
         let mut theme = Theme::default();
@@ -67,13 +74,25 @@ impl Theme {
                 (theme_dir.join("index.hbs"), &mut theme.index),
                 (theme_dir.join("header.hbs"), &mut theme.header),
                 (theme_dir.join("book.js"), &mut theme.js),
-                (theme_dir.join("book.css"), &mut theme.css),
+                (theme_dir.join("css/chrome.css"), &mut theme.chrome_css),
+                (theme_dir.join("css/general.css"), &mut theme.general_css),
+                (theme_dir.join("css/print.css"), &mut theme.print_css),
+                (
+                    theme_dir.join("css/variables.css"),
+                    &mut theme.variables_css,
+                ),
                 (theme_dir.join("favicon.png"), &mut theme.favicon),
                 (theme_dir.join("highlight.js"), &mut theme.highlight_js),
                 (theme_dir.join("clipboard.min.js"), &mut theme.clipboard_js),
                 (theme_dir.join("highlight.css"), &mut theme.highlight_css),
-                (theme_dir.join("tomorrow-night.css"), &mut theme.tomorrow_night_css),
-                (theme_dir.join("ayu-highlight.css"), &mut theme.ayu_highlight_css),
+                (
+                    theme_dir.join("tomorrow-night.css"),
+                    &mut theme.tomorrow_night_css,
+                ),
+                (
+                    theme_dir.join("ayu-highlight.css"),
+                    &mut theme.ayu_highlight_css,
+                ),
             ];
 
             for (filename, dest) in files {
@@ -96,7 +115,10 @@ impl Default for Theme {
         Theme {
             index: INDEX.to_owned(),
             header: HEADER.to_owned(),
-            css: CSS.to_owned(),
+            chrome_css: CHROME_CSS.to_owned(),
+            general_css: GENERAL_CSS.to_owned(),
+            print_css: PRINT_CSS.to_owned(),
+            variables_css: VARIABLES_CSS.to_owned(),
             favicon: FAVICON.to_owned(),
             js: JS.to_owned(),
             highlight_css: HIGHLIGHT_CSS.to_owned(),
@@ -124,12 +146,12 @@ fn load_file_contents<P: AsRef<Path>>(filename: P, dest: &mut Vec<u8>) -> Result
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempdir::TempDir;
+    use std::fs;
     use std::path::PathBuf;
+    use tempfile::Builder as TempFileBuilder;
 
     #[test]
     fn theme_uses_defaults_with_nonexistent_src_dir() {
@@ -144,21 +166,28 @@ mod tests {
 
     #[test]
     fn theme_dir_overrides_defaults() {
-        // Get all the non-Rust files in the theme directory
-        let special_files = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("src/theme")
-            .read_dir()
-            .unwrap()
-            .filter_map(|f| f.ok())
-            .map(|f| f.path())
-            .filter(|p| p.is_file() && !p.ends_with(".rs"));
+        let files = [
+            "index.hbs",
+            "header.hbs",
+            "favicon.png",
+            "css/chrome.css",
+            "css/general.css",
+            "css/print.css",
+            "css/variables.css",
+            "book.js",
+            "highlight.js",
+            "tomorrow-night.css",
+            "highlight.css",
+            "ayu-highlight.css",
+            "clipboard.min.js",
+        ];
 
-        let temp = TempDir::new("mdbook").unwrap();
+        let temp = TempFileBuilder::new().prefix("mdbook-").tempdir().unwrap();
+        fs::create_dir(temp.path().join("css")).unwrap();
 
         // "touch" all of the special files so we have empty copies
-        for special_file in special_files {
-            let filename = temp.path().join(special_file.file_name().unwrap());
-            let _ = File::create(&filename);
+        for file in &files {
+            File::create(&temp.path().join(file)).unwrap();
         }
 
         let got = Theme::new(temp.path());
@@ -166,7 +195,10 @@ mod tests {
         let empty = Theme {
             index: Vec::new(),
             header: Vec::new(),
-            css: Vec::new(),
+            chrome_css: Vec::new(),
+            general_css: Vec::new(),
+            print_css: Vec::new(),
+            variables_css: Vec::new(),
             favicon: Vec::new(),
             js: Vec::new(),
             highlight_css: Vec::new(),

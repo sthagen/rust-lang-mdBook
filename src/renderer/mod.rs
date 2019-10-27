@@ -8,23 +8,24 @@
 //!
 //! The definition for [RenderContext] may be useful though.
 //!
-//! [For Developers]: https://rust-lang-nursery.github.io/mdBook/lib/index.html
+//! [For Developers]: https://rust-lang-nursery.github.io/mdBook/for_developers/index.html
 //! [RenderContext]: struct.RenderContext.html
 
 pub use self::html_handlebars::HtmlHandlebars;
+pub use self::markdown_renderer::MarkdownRenderer;
 
 mod html_handlebars;
+mod markdown_renderer;
 
+use shlex::Shlex;
 use std::fs;
-use std::io::Read;
+use std::io::{self, Read};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use serde_json;
-use shlex::Shlex;
 
-use errors::*;
-use config::Config;
-use book::Book;
+use crate::book::Book;
+use crate::config::Config;
+use crate::errors::*;
 
 /// An arbitrary `mdbook` backend.
 ///
@@ -64,21 +65,24 @@ pub struct RenderContext {
     /// renderers to cache intermediate results, this directory is not
     /// guaranteed to be empty or even exist.
     pub destination: PathBuf,
+    #[serde(skip)]
+    __non_exhaustive: (),
 }
 
 impl RenderContext {
     /// Create a new `RenderContext`.
-    pub(crate) fn new<P, Q>(root: P, book: Book, config: Config, destination: Q) -> RenderContext
+    pub fn new<P, Q>(root: P, book: Book, config: Config, destination: Q) -> RenderContext
     where
         P: Into<PathBuf>,
         Q: Into<PathBuf>,
     {
         RenderContext {
-            book: book,
-            config: config,
-            version: env!("CARGO_PKG_VERSION").to_string(),
+            book,
+            config,
+            version: crate::MDBOOK_VERSION.to_string(),
             root: root.into(),
             destination: destination.into(),
+            __non_exhaustive: (),
         }
     }
 
@@ -155,13 +159,27 @@ impl Renderer for CmdRenderer {
 
         let _ = fs::create_dir_all(&ctx.destination);
 
-        let mut child = self.compose_command()?
+        let mut child = match self
+            .compose_command()?
             .stdin(Stdio::piped())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .current_dir(&ctx.destination)
             .spawn()
-            .chain_err(|| "Unable to start the renderer")?;
+        {
+            Ok(c) => c,
+            Err(ref e) if e.kind() == io::ErrorKind::NotFound => {
+                warn!(
+                    "The command wasn't found, is the \"{}\" backend installed?",
+                    self.name
+                );
+                warn!("\tCommand: {}", self.cmd);
+                return Ok(());
+            }
+            Err(e) => {
+                return Err(e).chain_err(|| "Unable to start the backend")?;
+            }
+        };
 
         {
             let mut stdin = child.stdin.take().expect("Child has stdin");

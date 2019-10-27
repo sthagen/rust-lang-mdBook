@@ -48,29 +48,53 @@ mdBook builds on stable Rust, if you want to build mdBook from source, here are 
 
 The resulting binary can be found in `mdBook/target/debug/` under the name `mdBook` or `mdBook.exe`.
 
+### Code Quality
 
-### Making changes to the style
+We love code quality and Rust has some excellent tools to assist you with contributions.
 
-mdBook doesn't use CSS directly but uses [Stylus](http://stylus-lang.com/), a CSS-preprocessor which compiles to CSS.
+#### Formatting Code with rustfmt
 
-When you want to change the style, it is important to not change the CSS directly because any manual modification to
-the CSS files will be overwritten when compiling the stylus files. Instead, you should make your changes directly in the
-[stylus files](https://github.com/rust-lang-nursery/mdBook/tree/master/src/theme/stylus) and regenerate the CSS.
+Before you make your Pull Request to the project, please run it through the `rustfmt` utility.
+This will ensure we have good quality source code that is better for us all to maintain.
 
-For this to work, you first need [Node and NPM](https://nodejs.org/en/) installed on your machine.
-Then run the following command to install both [stylus](http://stylus-lang.com/) and [nib](https://tj.github.io/nib/), you might need `sudo` to install successfully.
+[rustfmt](https://github.com/rust-lang-nursery/rustfmt) has a lot more information on the project.
+The quick guide is
 
-```
-npm install -g stylus nib
-```
+1. Install it
+    ```
+    rustup component add rustfmt
+    ```
+1. You can now run `rustfmt` on a single file simply by...
+    ```
+    rustfmt src/path/to/your/file.rs
+    ```
+   ... or you can format the entire project with
+   ```
+   cargo fmt
+   ```
+   When run through `cargo` it will format all bin and lib files in the current crate.
 
-When that finished, you can simply regenerate the CSS files by building mdBook with the following command:
+For more information, such as running it from your favourite editor, please see the `rustfmt` project. [rustfmt](https://github.com/rust-lang-nursery/rustfmt)
 
-```
-cargo build --features=regenerate-css
-```
 
-This should automatically call the appropriate stylus command to recompile the files to CSS and include them in the project.
+#### Finding Issues with Clippy
+
+Clippy is a code analyser/linter detecting mistakes, and therfore helps to improve your code.
+Like formatting your code with `rustfmt`, running clippy regularly and before your Pull Request will
+help us maintain awesome code.
+
+The best documentation can be found over at [rust-clippy](https://github.com/rust-lang-nursery/rust-clippy)
+
+1. To install
+    ```
+    rustup component add clippy
+    ```
+2. Running clippy
+    ```
+    cargo clippy
+    ```
+
+Clippy has an ever growing list of checks, that are managed in [lint files](https://rust-lang-nursery.github.io/rust-clippy/master/index.html).
 
 ### Making a pull-request
 

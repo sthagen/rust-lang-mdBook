@@ -1,3 +1,5 @@
+"use strict";
+
 // Fix back button cache problem
 window.onunload = function () { };
 
@@ -16,13 +18,30 @@ function playpen_text(playpen) {
 (function codeSnippets() {
     // Hide Rust code lines prepended with a specific character
     var hiding_character = "#";
-    var request = fetch("https://play.rust-lang.org/meta/crates", {
-        headers: {
-            'Content-Type': "application/json",
-        },
-        method: 'POST',
-        mode: 'cors',
-    });
+
+    function fetch_with_timeout(url, options, timeout = 6000) {
+        return Promise.race([
+            fetch(url, options),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), timeout))
+        ]);
+    }
+
+    var playpens = Array.from(document.querySelectorAll(".playpen"));
+    if (playpens.length > 0) {
+        fetch_with_timeout("https://play.rust-lang.org/meta/crates", {
+            headers: {
+                'Content-Type': "application/json",
+            },
+            method: 'POST',
+            mode: 'cors',
+        })
+        .then(response => response.json())
+        .then(response => {
+            // get list of crates available in the rust playground
+            let playground_crates = response.crates.map(item => item["id"]);
+            playpens.forEach(block => handle_crate_list_update(block, playground_crates));
+        });
+    }
 
     function handle_crate_list_update(playpen_block, playground_crates) {
         // update the play buttons after receiving the response
@@ -35,6 +54,15 @@ function playpen_text(playpen) {
                 let editor = window.ace.edit(code_block);
                 editor.addEventListener("change", function (e) {
                     update_play_button(playpen_block, playground_crates);
+                });
+                // add Ctrl-Enter command to execute rust code
+                editor.commands.addCommand({
+                    name: "run",
+                    bindKey: {
+                        win: "Ctrl-Enter",
+                        mac: "Ctrl-Enter"
+                    },
+                    exec: _editor => run_rust_code(playpen_block)
                 });
             }
         }
@@ -55,6 +83,7 @@ function playpen_text(playpen) {
         var txt = playpen_text(pre_block);
         var re = /extern\s+crate\s+([a-zA-Z_0-9]+)\s*;/g;
         var snippet_crates = [];
+        var item;
         while (item = re.exec(txt)) {
             snippet_crates.push(item[1]);
         }
@@ -81,34 +110,34 @@ function playpen_text(playpen) {
         }
 
         let text = playpen_text(code_block);
+        let classes = code_block.querySelector('code').classList;
+        let has_2018 = classes.contains("edition2018");
+        let edition = has_2018 ? "2018" : "2015";
 
         var params = {
-            channel: "stable",
-            mode: "debug",
-            crateType: "bin",
-            tests: false,
+            version: "stable",
+            optimize: "0",
             code: text,
-        }
+            edition: edition
+        };
 
         if (text.indexOf("#![feature") !== -1) {
-            params.channel = "nightly";
+            params.version = "nightly";
         }
 
         result_block.innerText = "Running...";
 
-        var request = fetch("https://play.rust-lang.org/execute", {
+        fetch_with_timeout("https://play.rust-lang.org/evaluate.json", {
             headers: {
                 'Content-Type': "application/json",
             },
             method: 'POST',
             mode: 'cors',
             body: JSON.stringify(params)
-        });
-
-        request
-            .then(function (response) { return response.json(); })
-            .then(function (response) { result_block.innerText = response.success ? response.stdout : response.stderr; })
-            .catch(function (error) { result_block.innerText = "Playground communication" + error.message; });
+        })
+        .then(response => response.json())
+        .then(response => result_block.innerText = response.result)
+        .catch(error => result_block.innerText = "Playground Communication: " + error.message);
     }
 
     // Syntax highlighting Configuration
@@ -141,87 +170,59 @@ function playpen_text(playpen) {
 
     Array.from(document.querySelectorAll("code.language-rust")).forEach(function (block) {
 
-        var code_block = block;
-        var pre_block = block.parentNode;
-        // hide lines
-        var lines = code_block.innerHTML.split("\n");
-        var first_non_hidden_line = false;
-        var lines_hidden = false;
-
-        for (var n = 0; n < lines.length; n++) {
-            if (lines[n].trim()[0] == hiding_character) {
-                if (first_non_hidden_line) {
-                    lines[n] = "<span class=\"hidden\">" + "\n" + lines[n].replace(/(\s*)# ?/, "$1") + "</span>";
-                }
-                else {
-                    lines[n] = "<span class=\"hidden\">" + lines[n].replace(/(\s*)# ?/, "$1") + "\n" + "</span>";
-                }
-                lines_hidden = true;
-            }
-            else if (first_non_hidden_line) {
-                lines[n] = "\n" + lines[n];
-            }
-            else {
-                first_non_hidden_line = true;
-            }
-        }
-        code_block.innerHTML = lines.join("");
-
+        var lines = Array.from(block.querySelectorAll('.boring'));
         // If no lines were hidden, return
-        if (!lines_hidden) { return; }
+        if (!lines.length) { return; }
+        block.classList.add("hide-boring");
 
         var buttons = document.createElement('div');
         buttons.className = 'buttons';
-        buttons.innerHTML = "<i class=\"fa fa-expand\" title=\"Show hidden lines\"></i>";
+        buttons.innerHTML = "<button class=\"fa fa-expand\" title=\"Show hidden lines\" aria-label=\"Show hidden lines\"></button>";
 
         // add expand button
-        pre_block.prepend(buttons);
+        var pre_block = block.parentNode;
+        pre_block.insertBefore(buttons, pre_block.firstChild);
 
         pre_block.querySelector('.buttons').addEventListener('click', function (e) {
             if (e.target.classList.contains('fa-expand')) {
-                var lines = pre_block.querySelectorAll('span.hidden');
-
                 e.target.classList.remove('fa-expand');
                 e.target.classList.add('fa-compress');
                 e.target.title = 'Hide lines';
+                e.target.setAttribute('aria-label', e.target.title);
 
-                Array.from(lines).forEach(function (line) {
-                    line.classList.remove('hidden');
-                    line.classList.add('unhidden');
-                });
+                block.classList.remove('hide-boring');
             } else if (e.target.classList.contains('fa-compress')) {
-                var lines = pre_block.querySelectorAll('span.unhidden');
-
                 e.target.classList.remove('fa-compress');
                 e.target.classList.add('fa-expand');
                 e.target.title = 'Show hidden lines';
+                e.target.setAttribute('aria-label', e.target.title);
 
-                Array.from(lines).forEach(function (line) {
-                    line.classList.remove('unhidden');
-                    line.classList.add('hidden');
-                });
+                block.classList.add('hide-boring');
             }
         });
     });
 
-    Array.from(document.querySelectorAll('pre code')).forEach(function (block) {
-        var pre_block = block.parentNode;
-        if (!pre_block.classList.contains('playpen')) {
-            var buttons = pre_block.querySelector(".buttons");
-            if (!buttons) {
-                buttons = document.createElement('div');
-                buttons.className = 'buttons';
-                pre_block.prepend(buttons);
+    if (window.playpen_copyable) {
+        Array.from(document.querySelectorAll('pre code')).forEach(function (block) {
+            var pre_block = block.parentNode;
+            if (!pre_block.classList.contains('playpen')) {
+                var buttons = pre_block.querySelector(".buttons");
+                if (!buttons) {
+                    buttons = document.createElement('div');
+                    buttons.className = 'buttons';
+                    pre_block.insertBefore(buttons, pre_block.firstChild);
+                }
+
+                var clipButton = document.createElement('button');
+                clipButton.className = 'fa fa-copy clip-button';
+                clipButton.title = 'Copy to clipboard';
+                clipButton.setAttribute('aria-label', clipButton.title);
+                clipButton.innerHTML = '<i class=\"tooltiptext\"></i>';
+
+                buttons.insertBefore(clipButton, buttons.firstChild);
             }
-
-            var clipButton = document.createElement('button');
-            clipButton.className = 'fa fa-copy clip-button';
-            clipButton.title = 'Copy to clipboard';
-            clipButton.innerHTML = '<i class=\"tooltiptext\"></i>';
-
-            buttons.prepend(clipButton);
-        }
-    });
+        });
+    }
 
     // Process playpen code blocks
     Array.from(document.querySelectorAll(".playpen")).forEach(function (pre_block) {
@@ -230,33 +231,38 @@ function playpen_text(playpen) {
         if (!buttons) {
             buttons = document.createElement('div');
             buttons.className = 'buttons';
-            pre_block.prepend(buttons);
+            pre_block.insertBefore(buttons, pre_block.firstChild);
         }
 
         var runCodeButton = document.createElement('button');
         runCodeButton.className = 'fa fa-play play-button';
         runCodeButton.hidden = true;
         runCodeButton.title = 'Run this code';
+        runCodeButton.setAttribute('aria-label', runCodeButton.title);
 
-        var copyCodeClipboardButton = document.createElement('button');
-        copyCodeClipboardButton.className = 'fa fa-copy clip-button';
-        copyCodeClipboardButton.innerHTML = '<i class="tooltiptext"></i>';
-        copyCodeClipboardButton.title = 'Copy to clipboard';
-
-        buttons.prepend(runCodeButton);
-        buttons.prepend(copyCodeClipboardButton);
-
+        buttons.insertBefore(runCodeButton, buttons.firstChild);
         runCodeButton.addEventListener('click', function (e) {
             run_rust_code(pre_block);
         });
+
+        if (window.playpen_copyable) {
+            var copyCodeClipboardButton = document.createElement('button');
+            copyCodeClipboardButton.className = 'fa fa-copy clip-button';
+            copyCodeClipboardButton.innerHTML = '<i class="tooltiptext"></i>';
+            copyCodeClipboardButton.title = 'Copy to clipboard';
+            copyCodeClipboardButton.setAttribute('aria-label', copyCodeClipboardButton.title);
+
+            buttons.insertBefore(copyCodeClipboardButton, buttons.firstChild);
+        }
 
         let code_block = pre_block.querySelector("code");
         if (window.ace && code_block.classList.contains("editable")) {
             var undoChangesButton = document.createElement('button');
             undoChangesButton.className = 'fa fa-history reset-button';
             undoChangesButton.title = 'Undo changes';
+            undoChangesButton.setAttribute('aria-label', undoChangesButton.title);
 
-            buttons.prepend(undoChangesButton);
+            buttons.insertBefore(undoChangesButton, buttons.firstChild);
 
             undoChangesButton.addEventListener('click', function () {
                 let editor = window.ace.edit(code_block);
@@ -265,40 +271,32 @@ function playpen_text(playpen) {
             });
         }
     });
-
-    request
-        .then(function (response) { return response.json(); })
-        .then(function (response) {
-            // get list of crates available in the rust playground
-            let playground_crates = response.crates.map(function (item) { return item["id"]; });
-            Array.from(document.querySelectorAll(".playpen")).forEach(function (block) {
-                handle_crate_list_update(block, playground_crates);
-            });
-        });
-
 })();
 
 (function themes() {
+    var html = document.querySelector('html');
     var themeToggleButton = document.getElementById('theme-toggle');
     var themePopup = document.getElementById('theme-list');
     var themeColorMetaTag = document.querySelector('meta[name="theme-color"]');
     var stylesheets = {
-        ayuHighlight: document.querySelector("[href='ayu-highlight.css']"),
-        tomorrowNight: document.querySelector("[href='tomorrow-night.css']"),
-        highlight: document.querySelector("[href='highlight.css']"),
+        ayuHighlight: document.querySelector("[href$='ayu-highlight.css']"),
+        tomorrowNight: document.querySelector("[href$='tomorrow-night.css']"),
+        highlight: document.querySelector("[href$='highlight.css']"),
     };
 
     function showThemes() {
         themePopup.style.display = 'block';
         themeToggleButton.setAttribute('aria-expanded', true);
+        themePopup.querySelector("button#" + document.body.className).focus();
     }
 
     function hideThemes() {
         themePopup.style.display = 'none';
         themeToggleButton.setAttribute('aria-expanded', false);
+        themeToggleButton.focus();
     }
 
-    function set_theme(theme) {
+    function set_theme(theme, store = true) {
         let ace_theme;
 
         if (theme == 'coal' || theme == 'navy') {
@@ -311,13 +309,11 @@ function playpen_text(playpen) {
             stylesheets.ayuHighlight.disabled = false;
             stylesheets.tomorrowNight.disabled = true;
             stylesheets.highlight.disabled = true;
-
             ace_theme = "ace/theme/tomorrow_night";
         } else {
             stylesheets.ayuHighlight.disabled = true;
             stylesheets.tomorrowNight.disabled = true;
             stylesheets.highlight.disabled = false;
-
             ace_theme = "ace/theme/dawn";
         }
 
@@ -331,17 +327,24 @@ function playpen_text(playpen) {
             });
         }
 
-        try { localStorage.setItem('mdbook-theme', theme); } catch (e) { }
+        var previousTheme;
+        try { previousTheme = localStorage.getItem('mdbook-theme'); } catch (e) { }
+        if (previousTheme === null || previousTheme === undefined) { previousTheme = default_theme; }
 
-        document.body.className = theme;
+        if (store) {
+            try { localStorage.setItem('mdbook-theme', theme); } catch (e) { }
+        }
+
+        html.classList.remove(previousTheme);
+        html.classList.add(theme);
     }
 
     // Set theme
     var theme;
     try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
-    if (theme === null || theme === undefined) { theme = 'light'; }
+    if (theme === null || theme === undefined) { theme = default_theme; }
 
-    set_theme(theme);
+    set_theme(theme, false);
 
     themeToggleButton.addEventListener('click', function () {
         if (themePopup.style.display === 'block') {
@@ -356,18 +359,50 @@ function playpen_text(playpen) {
         set_theme(theme);
     });
 
-    // Hide theme selector popup when clicking outside of it
-    document.addEventListener('click', function (event) {
-        if (themePopup.style.display === 'block' && !themeToggleButton.contains(event.target) && !themePopup.contains(event.target)) {
+    themePopup.addEventListener('focusout', function(e) {
+        // e.relatedTarget is null in Safari and Firefox on macOS (see workaround below)
+        if (!!e.relatedTarget && !themeToggleButton.contains(e.relatedTarget) && !themePopup.contains(e.relatedTarget)) {
+            hideThemes();
+        }
+    });
+
+    // Should not be needed, but it works around an issue on macOS & iOS: https://github.com/rust-lang-nursery/mdBook/issues/628
+    document.addEventListener('click', function(e) {
+        if (themePopup.style.display === 'block' && !themeToggleButton.contains(e.target) && !themePopup.contains(e.target)) {
             hideThemes();
         }
     });
 
     document.addEventListener('keydown', function (e) {
+        if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) { return; }
+        if (!themePopup.contains(e.target)) { return; }
+
         switch (e.key) {
             case 'Escape':
                 e.preventDefault();
                 hideThemes();
+                break;
+            case 'ArrowUp':
+                e.preventDefault();
+                var li = document.activeElement.parentElement;
+                if (li && li.previousElementSibling) {
+                    li.previousElementSibling.querySelector('button').focus();
+                }
+                break;
+            case 'ArrowDown':
+                e.preventDefault();
+                var li = document.activeElement.parentElement;
+                if (li && li.nextElementSibling) {
+                    li.nextElementSibling.querySelector('button').focus();
+                }
+                break;
+            case 'Home':
+                e.preventDefault();
+                themePopup.querySelector('li:first-child button').focus();
+                break;
+            case 'End':
+                e.preventDefault();
+                themePopup.querySelector('li:last-child button').focus();
                 break;
         }
     });
@@ -376,8 +411,10 @@ function playpen_text(playpen) {
 (function sidebar() {
     var html = document.querySelector("html");
     var sidebar = document.getElementById("sidebar");
+    var sidebarScrollBox = document.getElementById("sidebar-scrollbox");
     var sidebarLinks = document.querySelectorAll('#sidebar a');
     var sidebarToggleButton = document.getElementById("sidebar-toggle");
+    var sidebarResizeHandle = document.getElementById("sidebar-resize-handle");
     var firstContact = null;
 
     function showSidebar() {
@@ -390,6 +427,17 @@ function playpen_text(playpen) {
         sidebar.setAttribute('aria-hidden', false);
         try { localStorage.setItem('mdbook-sidebar', 'visible'); } catch (e) { }
     }
+
+
+    var sidebarAnchorToggles = document.querySelectorAll('#sidebar a.toggle');
+
+    function toggleSection(ev) {
+        ev.currentTarget.parentElement.classList.toggle('expanded');
+    }
+
+    Array.from(sidebarAnchorToggles).forEach(function (el) {
+        el.addEventListener('click', toggleSection);
+    });
 
     function hideSidebar() {
         html.classList.remove('sidebar-visible')
@@ -417,12 +465,29 @@ function playpen_text(playpen) {
         }
     });
 
+    sidebarResizeHandle.addEventListener('mousedown', initResize, false);
+
+    function initResize(e) {
+        window.addEventListener('mousemove', resize, false);
+        window.addEventListener('mouseup', stopResize, false);
+        html.classList.add('sidebar-resizing');
+    }
+    function resize(e) {
+        document.documentElement.style.setProperty('--sidebar-width', (e.clientX - sidebar.offsetLeft) + 'px');
+    }
+    //on mouseup remove windows functions mousemove & mouseup
+    function stopResize(e) {
+        html.classList.remove('sidebar-resizing');
+        window.removeEventListener('mousemove', resize, false);
+        window.removeEventListener('mouseup', stopResize, false);
+    }
+
     document.addEventListener('touchstart', function (e) {
         firstContact = {
             x: e.touches[0].clientX,
             time: Date.now()
         };
-    });
+    }, { passive: true });
 
     document.addEventListener('touchmove', function (e) {
         if (!firstContact)
@@ -440,18 +505,19 @@ function playpen_text(playpen) {
 
             firstContact = null;
         }
-    });
+    }, { passive: true });
 
     // Scroll sidebar to current active section
     var activeSection = sidebar.querySelector(".active");
     if (activeSection) {
-        sidebar.scrollTop = activeSection.offsetTop;
+        sidebarScrollBox.scrollTop = activeSection.offsetTop;
     }
 })();
 
 (function chapterNavigation() {
     document.addEventListener('keydown', function (e) {
         if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) { return; }
+        if (window.search && window.search.hasFocus()) { return; }
 
         switch (e.key) {
             case 'ArrowRight':
@@ -485,7 +551,7 @@ function playpen_text(playpen) {
         elem.className = 'fa fa-copy tooltipped';
     }
 
-    var clipboardSnippets = new Clipboard('.clip-button', {
+    var clipboardSnippets = new ClipboardJS('.clip-button', {
         text: function (trigger) {
             hideTooltip(trigger);
             let playpen = trigger.closest("pre");
@@ -509,6 +575,14 @@ function playpen_text(playpen) {
     });
 })();
 
+(function scrollToTop () {
+    var menuTitle = document.querySelector('.menu-title');
+
+    menuTitle.addEventListener('click', function () {
+        document.scrollingElement.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+})();
+
 (function autoHideMenu() {
     var menu = document.getElementById('menu-bar');
 
@@ -529,6 +603,6 @@ function playpen_text(playpen) {
             menu.classList.remove('bordered');
         }
 
-        previousScrollTop = document.scrollingElement.scrollTop;
+        previousScrollTop = Math.max(document.scrollingElement.scrollTop, 0);
     }, { passive: true });
 })();

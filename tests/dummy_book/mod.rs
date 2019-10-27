@@ -3,22 +3,15 @@
 
 // Not all features are used in all test crates, so...
 #![allow(dead_code, unused_variables, unused_imports, unused_extern_crates)]
-extern crate mdbook;
-extern crate tempdir;
-extern crate walkdir;
 
-use std::path::Path;
+use mdbook::errors::*;
 use std::fs::{self, File};
 use std::io::{Read, Write};
-use mdbook::errors::*;
-use mdbook::utils::fs::file_to_string;
+use std::path::Path;
 
-// The funny `self::` here is because we've got an `extern crate ...` and are
-// in a submodule
-use self::tempdir::TempDir;
-use self::mdbook::MDBook;
-use self::walkdir::WalkDir;
-
+use mdbook::MDBook;
+use tempfile::{Builder as TempFileBuilder, TempDir};
+use walkdir::WalkDir;
 
 /// Create a dummy book in a temporary directory, using the contents of
 /// `SUMMARY_MD` as a guide.
@@ -47,24 +40,36 @@ impl DummyBook {
 
     /// Write a book to a temporary directory using the provided settings.
     pub fn build(&self) -> Result<TempDir> {
-        let temp = TempDir::new("dummy_book").chain_err(|| "Unable to create temp directory")?;
+        let temp = TempFileBuilder::new()
+            .prefix("dummy_book-")
+            .tempdir()
+            .chain_err(|| "Unable to create temp directory")?;
 
         let dummy_book_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/dummy_book");
         recursive_copy(&dummy_book_root, temp.path()).chain_err(|| {
-                                                                     "Couldn't copy files into a \
-                                                                      temporary directory"
-                                                                 })?;
+            "Couldn't copy files into a \
+             temporary directory"
+        })?;
 
         let sub_pattern = if self.passing_test { "true" } else { "false" };
-        let file_containing_test = temp.path().join("src/first/nested.md");
-        replace_pattern_in_file(&file_containing_test, "$TEST_STATUS", sub_pattern)?;
+        let files_containing_tests = [
+            "src/first/nested.md",
+            "src/first/nested-test.rs",
+            "src/first/nested-test-with-anchors.rs",
+            "src/first/partially-included-test.rs",
+            "src/first/partially-included-test-with-anchors.rs",
+        ];
+        for file in &files_containing_tests {
+            let path_containing_tests = temp.path().join(file);
+            replace_pattern_in_file(&path_containing_tests, "$TEST_STATUS", sub_pattern)?;
+        }
 
         Ok(temp)
     }
 }
 
 fn replace_pattern_in_file(filename: &Path, from: &str, to: &str) -> Result<()> {
-    let contents = file_to_string(filename)?;
+    let contents = fs::read_to_string(filename)?;
     File::create(filename)?.write_all(contents.replace(from, to).as_bytes())?;
 
     Ok(())
@@ -74,30 +79,33 @@ fn replace_pattern_in_file(filename: &Path, from: &str, to: &str) -> Result<()> 
 /// the list of strings asserting that the file contains all of them.
 pub fn assert_contains_strings<P: AsRef<Path>>(filename: P, strings: &[&str]) {
     let filename = filename.as_ref();
-    let content = file_to_string(filename).expect("Couldn't read the file's contents");
+    let content = fs::read_to_string(filename).expect("Couldn't read the file's contents");
 
     for s in strings {
-        assert!(content.contains(s),
-                "Searching for {:?} in {}\n\n{}",
-                s,
-                filename.display(),
-                content);
+        assert!(
+            content.contains(s),
+            "Searching for {:?} in {}\n\n{}",
+            s,
+            filename.display(),
+            content
+        );
     }
 }
 
 pub fn assert_doesnt_contain_strings<P: AsRef<Path>>(filename: P, strings: &[&str]) {
     let filename = filename.as_ref();
-    let content = file_to_string(filename).expect("Couldn't read the file's contents");
+    let content = fs::read_to_string(filename).expect("Couldn't read the file's contents");
 
     for s in strings {
-        assert!(!content.contains(s),
-                "Found {:?} in {}\n\n{}",
-                s,
-                filename.display(),
-                content);
+        assert!(
+            !content.contains(s),
+            "Found {:?} in {}\n\n{}",
+            s,
+            filename.display(),
+            content
+        );
     }
 }
-
 
 /// Recursively copy an entire directory tree to somewhere else (a la `cp -r`).
 fn recursive_copy<A: AsRef<Path>, B: AsRef<Path>>(from: A, to: B) -> Result<()> {
@@ -108,9 +116,9 @@ fn recursive_copy<A: AsRef<Path>, B: AsRef<Path>>(from: A, to: B) -> Result<()> 
         let entry = entry.chain_err(|| "Unable to inspect directory entry")?;
 
         let original_location = entry.path();
-        let relative = original_location.strip_prefix(&from)
-                                        .expect("`original_location` is inside the `from` \
-                                                 directory");
+        let relative = original_location
+            .strip_prefix(&from)
+            .expect("`original_location` is inside the `from` directory");
         let new_location = to.join(relative);
 
         if original_location.is_file() {
@@ -118,9 +126,8 @@ fn recursive_copy<A: AsRef<Path>, B: AsRef<Path>>(from: A, to: B) -> Result<()> 
                 fs::create_dir_all(parent).chain_err(|| "Couldn't create directory")?;
             }
 
-            fs::copy(&original_location, &new_location).chain_err(|| {
-                                                                      "Unable to copy file contents"
-                                                                  })?;
+            fs::copy(&original_location, &new_location)
+                .chain_err(|| "Unable to copy file contents")?;
         }
     }
 
@@ -128,8 +135,8 @@ fn recursive_copy<A: AsRef<Path>, B: AsRef<Path>>(from: A, to: B) -> Result<()> 
 }
 
 pub fn new_copy_of_example_book() -> Result<TempDir> {
-    let temp = TempDir::new("book-example")?;
-    
+    let temp = TempFileBuilder::new().prefix("book-example").tempdir()?;
+
     let book_example = Path::new(env!("CARGO_MANIFEST_DIR")).join("book-example");
 
     recursive_copy(book_example, temp.path())?;

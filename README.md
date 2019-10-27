@@ -1,25 +1,8 @@
 # mdBook
 
-<table>
-    <tr>
-        <td><strong>Linux / OS X</strong></td>
-        <td>
-            <a href="https://travis-ci.org/rust-lang-nursery/mdBook"><img src="https://travis-ci.org/rust-lang-nursery/mdBook.svg?branch=master"></a>
-        </td>
-    </tr>
-    <tr>
-        <td><strong>Windows</strong></td>
-        <td>
-            <a href="https://ci.appveyor.com/project/azerupi/mdbook/"><img src="https://ci.appveyor.com/api/projects/status/o38racsnbcospyc8/branch/master?svg=true"></a>
-        </td>
-    </tr>
-    <tr>
-        <td colspan="2">
-            <a href="https://crates.io/crates/mdbook"><img src="https://img.shields.io/crates/v/mdbook.svg"></a>
-            <a href="LICENSE"><img src="https://img.shields.io/github/license/rust-lang-nursery/mdBook.svg"></a>
-        </td>
-    </tr>
-</table>
+[![Build Status](https://github.com/rust-lang-nursery/mdBook/workflows/CI/badge.svg)](https://github.com/rust-lang-nursery/mdBook/actions?workflow=CI)
+[![crates.io](https://img.shields.io/crates/v/mdbook.svg)](https://crates.io/crates/mdbook)
+[![LICENSE](https://img.shields.io/github/license/rust-lang-nursery/mdBook.svg)](LICENSE)
 
 mdBook is a utility to create modern online books from Markdown files.
 
@@ -40,8 +23,8 @@ There are multiple ways to install mdBook.
    path to the binary into your `PATH`.
 
 2. **From Crates.io**
-j
-   This requires [Rust] and Cargo to be installed. Once you have installed
+
+   This requires at least [Rust] 1.35 and Cargo to be installed. Once you have installed
    Rust, type the following in the terminal:
 
    ```
@@ -57,7 +40,7 @@ j
    another CI server, we recommend that you specify a semver version range for
    mdBook when you install it through your script!
 
-   This will constrain the server to install the latests **non-breaking**
+   This will constrain the server to install the latest **non-breaking**
    version of mdBook and will prevent your books from failing to build because
    we released a new version. For example:
 
@@ -65,7 +48,7 @@ j
    cargo install mdbook --vers "^0.1.0"
    ```
 
-3. **From Git**  
+3. **From Git**
 
    The version published to crates.io will ever so slightly be behind the
    version hosted here on GitHub. If you need the latest version you can build
@@ -77,7 +60,7 @@ j
 
    Again, make sure to add the Cargo bin directory to your `PATH`.
 
-4. **For Contributions**  
+4. **For Contributions**
 
    If you want to contribute to mdBook you will have to clone the repository on
    your local machine:
@@ -141,6 +124,64 @@ explanation, check out the [User Guide].
     `http://localhost:3000` (port is changeable) and reloads the browser when a
     change occurs.
 
+- `mdbook clean`
+
+    Delete directory in which generated book is located.
+
+### 3rd Party Plugins
+
+The way a book is loaded and rendered can be configured by the user via third
+party plugins. These plugins are just programs which will be invoked during the
+build process and are split into roughly two categories, *preprocessors* and
+*renderers*.
+
+Preprocessors are used to transform a book before it is sent to a renderer.
+One example would be to replace all occurrences of
+`{{#include some_file.ext}}` with the contents of that file. Some existing
+preprocessors are:
+
+- `index` - a built-in preprocessor (enabled by default) which will transform
+  all `README.md` chapters to `index.md` so `foo/README.md` can be accessed via
+  the url `foo/` when published to a browser
+- `links` - a built-in preprocessor (enabled by default) for expanding the
+  `{{# playpen}}` and `{{# include}}` helpers in a chapter.
+
+Renderers are given the final book so they can do something with it. This is
+typically used for, as the name suggests, rendering the document in a particular
+format, however there's nothing stopping a renderer from doing static analysis
+of a book in order to validate links or run tests. Some existing renderers are:
+
+- `html` - the built-in renderer which will generate a HTML version of the book
+- `markdown` - the built-in renderer (disabled by default) which will run
+  preprocessors then output the resulting Markdown. Useful for debugging
+  preprocessors.
+- [`linkcheck`] - a backend which will check that all links are valid
+- [`epub`] - an experimental EPUB generator
+
+> **Note for Developers:** Feel free to send us a PR if you've developed your
+> own plugin and want it mentioned here.
+
+A preprocessor or renderer is enabled by installing the appropriate program and
+then mentioning it in the book's `book.toml` file.
+
+```console
+$ cargo install mdbook-linkcheck
+$ edit book.toml && cat book.toml
+[book]
+title = "My Awesome Book"
+authors = ["Michael-F-Bryan"]
+
+[output.html]
+
+[output.linkcheck]  # enable the "mdbook-linkcheck" renderer
+
+$ mdbook build
+2018-10-20 13:57:51 [INFO] (mdbook::book): Book building has started
+2018-10-20 13:57:51 [INFO] (mdbook::book): Running the html backend
+2018-10-20 13:57:53 [INFO] (mdbook::book): Running the linkcheck backend
+```
+
+For more information on the plugin system, consult the [User Guide].
 
 ### As a library
 
@@ -184,4 +225,6 @@ All the code in this repository is released under the ***Mozilla Public License 
 [releases]: https://github.com/rust-lang-nursery/mdBook/releases
 [Rust]: https://www.rust-lang.org/
 [CLI docs]: http://rust-lang-nursery.github.io/mdBook/cli/init.html
-[master-docs]: http://rust-lang-nursery.github.io/mdBook/mdbook/
+[master-docs]: http://rust-lang-nursery.github.io/mdBook/
+[`linkcheck`]: https://crates.io/crates/mdbook-linkcheck
+[`epub`]: https://crates.io/crates/mdbook-epub

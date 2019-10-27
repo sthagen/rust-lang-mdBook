@@ -1,10 +1,10 @@
+use crate::errors::*;
+use memchr::{self, Memchr};
+use pulldown_cmark::{self, Event, Tag};
 use std::fmt::{self, Display, Formatter};
 use std::iter::FromIterator;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-use memchr::{self, Memchr};
-use pulldown_cmark::{self, Alignment, Event, Tag};
-use errors::*;
 
 /// Parse the text from a `SUMMARY.md` file into a sort of "recipe" to be
 /// used when loading a book from disk.
@@ -164,37 +164,38 @@ struct SummaryParser<'a> {
 /// use pattern matching and you won't get errors because `take_while()`
 /// moves `$stream` out of self.
 macro_rules! collect_events {
-    ($stream:expr, start $delimiter:pat) => {
+    ($stream:expr,start $delimiter:pat) => {
         collect_events!($stream, Event::Start($delimiter))
     };
-    ($stream:expr, end $delimiter:pat) => {
+    ($stream:expr,end $delimiter:pat) => {
         collect_events!($stream, Event::End($delimiter))
     };
-    ($stream:expr, $delimiter:pat) => {
-        {
-            let mut events = Vec::new();
+    ($stream:expr, $delimiter:pat) => {{
+        let mut events = Vec::new();
 
-            loop {
-                let event = $stream.next();
-                trace!("Next event: {:?}", event);
+        loop {
+            let event = $stream.next();
+            trace!("Next event: {:?}", event);
 
-                match event {
-                    Some($delimiter) => break,
-                    Some(other) => events.push(other),
-                    None => {
-                        debug!("Reached end of stream without finding the closing pattern, {}", stringify!($delimiter));
-                        break;
-                    }
+            match event {
+                Some($delimiter) => break,
+                Some(other) => events.push(other),
+                None => {
+                    debug!(
+                        "Reached end of stream without finding the closing pattern, {}",
+                        stringify!($delimiter)
+                    );
+                    break;
                 }
             }
-
-            events
         }
-    }
+
+        events
+    }};
 }
 
 impl<'a> SummaryParser<'a> {
-    fn new(text: &str) -> SummaryParser {
+    fn new(text: &str) -> SummaryParser<'_> {
         let pulldown_parser = pulldown_cmark::Parser::new(text);
 
         SummaryParser {
@@ -220,11 +221,14 @@ impl<'a> SummaryParser<'a> {
     fn parse(mut self) -> Result<Summary> {
         let title = self.parse_title();
 
-        let prefix_chapters = self.parse_affix(true)
+        let prefix_chapters = self
+            .parse_affix(true)
             .chain_err(|| "There was an error parsing the prefix chapters")?;
-        let numbered_chapters = self.parse_numbered()
+        let numbered_chapters = self
+            .parse_numbered()
             .chain_err(|| "There was an error parsing the numbered chapters")?;
-        let suffix_chapters = self.parse_affix(false)
+        let suffix_chapters = self
+            .parse_affix(false)
             .chain_err(|| "There was an error parsing the suffix chapters")?;
 
         Ok(Summary {
@@ -255,7 +259,7 @@ impl<'a> SummaryParser<'a> {
                         bail!(self.parse_error("Suffix chapters cannot be followed by a list"));
                     }
                 }
-                Some(Event::Start(Tag::Link(href, _))) => {
+                Some(Event::Start(Tag::Link(_type, href, _title))) => {
                     let link = self.parse_link(href.to_string())?;
                     items.push(SummaryItem::Link(link));
                 }
@@ -276,7 +280,7 @@ impl<'a> SummaryParser<'a> {
             Err(self.parse_error("You can't have an empty link."))
         } else {
             Ok(Link {
-                name: name,
+                name,
                 location: PathBuf::from(href.to_string()),
                 number: None,
                 nested_items: Vec::new(),
@@ -288,6 +292,7 @@ impl<'a> SummaryParser<'a> {
     /// already been consumed by a previous parser.
     fn parse_numbered(&mut self) -> Result<Vec<SummaryItem>> {
         let mut items = Vec::new();
+        let mut root_items = 0;
         let root_number = SectionNumber::default();
 
         // we need to do this funny loop-match-if-let dance because a rule will
@@ -304,7 +309,8 @@ impl<'a> SummaryParser<'a> {
             // if we've resumed after something like a rule the root sections
             // will be numbered from 1. We need to manually go back and update
             // them
-            update_section_numbers(&mut bunch_of_items, 0, items.len() as u32);
+            update_section_numbers(&mut bunch_of_items, 0, root_items);
+            root_items += bunch_of_items.len() as u32;
             items.extend(bunch_of_items);
 
             match self.next_event() {
@@ -313,24 +319,15 @@ impl<'a> SummaryParser<'a> {
                     break;
                 }
                 Some(Event::Start(other_tag)) => {
-                    // FIXME: Remove this when google/pulldown_cmark#120 lands (new patch release)
-                    // replace with `other_tag == Tag::Rule`
-                    if tag_eq(&other_tag, &Tag::Rule) {
+                    if other_tag == Tag::Rule {
                         items.push(SummaryItem::Separator);
                     }
                     trace!("Skipping contents of {:?}", other_tag);
 
                     // Skip over the contents of this tag
                     while let Some(event) = self.next_event() {
-                        // FIXME: Remove this when google/pulldown_cmark#120 lands (new patch release)
-                        // and replace the nested if-let with:
-                        // if next == Event::End(other_tag.clone()) {
-                        //     break;
-                        // }
-                        if let Event::End(tag) = event {
-                            if tag_eq(&tag, &other_tag) {
-                                break;
-                            }
+                        if event == Event::End(other_tag.clone()) {
+                            break;
                         }
                     }
 
@@ -400,7 +397,7 @@ impl<'a> SummaryParser<'a> {
         loop {
             match self.next_event() {
                 Some(Event::Start(Tag::Paragraph)) => continue,
-                Some(Event::Start(Tag::Link(href, _))) => {
+                Some(Event::Start(Tag::Link(_type, href, _title))) => {
                     let mut link = self.parse_link(href.to_string())?;
 
                     let mut number = parent.clone();
@@ -474,51 +471,14 @@ fn get_last_link(links: &mut [SummaryItem]) -> Result<(usize, &mut Link)> {
 
 /// Removes the styling from a list of Markdown events and returns just the
 /// plain text.
-fn stringify_events(events: Vec<Event>) -> String {
+fn stringify_events(events: Vec<Event<'_>>) -> String {
     events
         .into_iter()
         .filter_map(|t| match t {
-            Event::Text(text) => Some(text.into_owned()),
+            Event::Text(text) | Event::Code(text) => Some(text.into_string()),
             _ => None,
         })
         .collect()
-}
-
-// FIXME: Remove this when google/pulldown_cmark#120 lands (new patch release)
-fn tag_eq(left: &Tag, right: &Tag) -> bool {
-    match (left, right) {
-        (&Tag::Paragraph, &Tag::Paragraph) => true,
-        (&Tag::Rule, &Tag::Rule) => true,
-        (&Tag::Header(a), &Tag::Header(b)) => a == b,
-        (&Tag::BlockQuote, &Tag::BlockQuote) => true,
-        (&Tag::CodeBlock(ref a), &Tag::CodeBlock(ref b)) => a == b,
-        (&Tag::List(ref a), &Tag::List(ref b)) => a == b,
-        (&Tag::Item, &Tag::Item) => true,
-        (&Tag::FootnoteDefinition(ref a), &Tag::FootnoteDefinition(ref b)) => a == b,
-        (&Tag::Table(ref a), &Tag::Table(ref b)) => {
-            a.iter().zip(b.iter()).all(|(l, r)| alignment_eq(*l, *r))
-        }
-        (&Tag::TableHead, &Tag::TableHead) => true,
-        (&Tag::TableRow, &Tag::TableRow) => true,
-        (&Tag::TableCell, &Tag::TableCell) => true,
-        (&Tag::Emphasis, &Tag::Emphasis) => true,
-        (&Tag::Strong, &Tag::Strong) => true,
-        (&Tag::Code, &Tag::Code) => true,
-        (&Tag::Link(ref a_1, ref a_2), &Tag::Link(ref b_1, ref b_2)) => a_1 == b_1 && a_2 == b_2,
-        (&Tag::Image(ref a_1, ref a_2), &Tag::Image(ref b_1, ref b_2)) => a_1 == b_1 && a_2 == b_2,
-        _ => false,
-    }
-}
-
-// FIXME: Remove this when google/pulldown_cmark#120 lands (new patch release)
-fn alignment_eq(left: Alignment, right: Alignment) -> bool {
-    match (left, right) {
-        (Alignment::None, Alignment::None) => true,
-        (Alignment::Left, Alignment::Left) => true,
-        (Alignment::Center, Alignment::Center) => true,
-        (Alignment::Right, Alignment::Right) => true,
-        _ => false,
-    }
 }
 
 /// A section number like "1.2.3", basically just a newtype'd `Vec<u32>` with
@@ -527,7 +487,7 @@ fn alignment_eq(left: Alignment, right: Alignment) -> bool {
 pub struct SectionNumber(pub Vec<u32>);
 
 impl Display for SectionNumber {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         if self.0.is_empty() {
             write!(f, "0")
         } else {
@@ -669,7 +629,7 @@ mod tests {
         let _ = parser.stream.next(); // skip past start of paragraph
 
         let href = match parser.stream.next() {
-            Some(Event::Start(Tag::Link(href, _))) => href.to_string(),
+            Some(Event::Start(Tag::Link(_type, href, _title))) => href.to_string(),
             other => panic!("Unreachable, {:?}", other),
         };
 
@@ -705,14 +665,12 @@ mod tests {
                 name: String::from("First"),
                 location: PathBuf::from("./first.md"),
                 number: Some(SectionNumber(vec![1])),
-                nested_items: vec![
-                    SummaryItem::Link(Link {
-                        name: String::from("Nested"),
-                        location: PathBuf::from("./nested.md"),
-                        number: Some(SectionNumber(vec![1, 1])),
-                        nested_items: Vec::new(),
-                    }),
-                ],
+                nested_items: vec![SummaryItem::Link(Link {
+                    name: String::from("Nested"),
+                    location: PathBuf::from("./nested.md"),
+                    number: Some(SectionNumber(vec![1, 1])),
+                    nested_items: Vec::new(),
+                })],
             }),
             SummaryItem::Link(Link {
                 name: String::from("Second"),
@@ -768,5 +726,42 @@ mod tests {
 
         let got = parser.parse_numbered();
         assert!(got.is_err());
+    }
+
+    /// Regression test for https://github.com/rust-lang-nursery/mdBook/issues/779
+    /// Ensure section numbers are correctly incremented after a horizontal separator.
+    #[test]
+    fn keep_numbering_after_separator() {
+        let src =
+            "- [First](./first.md)\n---\n- [Second](./second.md)\n---\n- [Third](./third.md)\n";
+        let should_be = vec![
+            SummaryItem::Link(Link {
+                name: String::from("First"),
+                location: PathBuf::from("./first.md"),
+                number: Some(SectionNumber(vec![1])),
+                nested_items: Vec::new(),
+            }),
+            SummaryItem::Separator,
+            SummaryItem::Link(Link {
+                name: String::from("Second"),
+                location: PathBuf::from("./second.md"),
+                number: Some(SectionNumber(vec![2])),
+                nested_items: Vec::new(),
+            }),
+            SummaryItem::Separator,
+            SummaryItem::Link(Link {
+                name: String::from("Third"),
+                location: PathBuf::from("./third.md"),
+                number: Some(SectionNumber(vec![3])),
+                nested_items: Vec::new(),
+            }),
+        ];
+
+        let mut parser = SummaryParser::new(src);
+        let _ = parser.stream.next();
+
+        let got = parser.parse_numbered().unwrap();
+
+        assert_eq!(got, should_be);
     }
 }
