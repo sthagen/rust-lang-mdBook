@@ -1,6 +1,6 @@
 # mdBook
 
-[![Build Status](https://github.com/rust-lang/mdBook/workflows/CI/badge.svg)](https://github.com/rust-lang/mdBook/actions?workflow=CI)
+[![Build Status](https://github.com/rust-lang/mdBook/workflows/CI/badge.svg?event=push)](https://github.com/rust-lang/mdBook/actions?workflow=CI)
 [![crates.io](https://img.shields.io/crates/v/mdbook.svg)](https://crates.io/crates/mdbook)
 [![LICENSE](https://img.shields.io/github/license/rust-lang/mdBook.svg)](LICENSE)
 
@@ -24,7 +24,7 @@ There are multiple ways to install mdBook.
 
 2. **From Crates.io**
 
-   This requires at least [Rust] 1.35 and Cargo to be installed. Once you have installed
+   This requires at least [Rust] 1.39 and Cargo to be installed. Once you have installed
    Rust, type the following in the terminal:
 
    ```
@@ -42,10 +42,14 @@ There are multiple ways to install mdBook.
 
    This will constrain the server to install the latest **non-breaking**
    version of mdBook and will prevent your books from failing to build because
-   we released a new version. For example:
+   we released a new version.
+
+   You can also disable default features to speed up compile time.
+
+   Example:
 
    ```
-   cargo install mdbook --vers "^0.1.0"
+   cargo install mdbook --no-default-features --features output --vers "^0.1.0"
    ```
 
 3. **From Git**
@@ -81,16 +85,17 @@ There are multiple ways to install mdBook.
 
 ## Usage
 
-mdBook will primarily be used as a command line tool, even though it exposes
+mdBook is primarily used as a command line tool, even though it exposes
 all its functionality as a Rust crate for integration in other projects.
 
 Here are the main commands you will want to run. For a more exhaustive
 explanation, check out the [User Guide].
 
-- `mdbook init`
+- `mdbook init <directory>`
 
     The init command will create a directory with the minimal boilerplate to
-    start with.
+    start with. If the `<directory>` parameter is omitted, the current 
+    directory will be used.
 
     ```
     book-test/
@@ -144,7 +149,8 @@ preprocessors are:
   all `README.md` chapters to `index.md` so `foo/README.md` can be accessed via
   the url `foo/` when published to a browser
 - `links` - a built-in preprocessor (enabled by default) for expanding the
-  `{{# playpen}}` and `{{# include}}` helpers in a chapter.
+  `{{# playground}}` and `{{# include}}` helpers in a chapter.
+- [`katex`](https://github.com/lzanini/mdbook-katex) - a preprocessor rendering LaTex equations to HTML.
 
 Renderers are given the final book so they can do something with it. This is
 typically used for, as the name suggests, rendering the document in a particular
@@ -200,12 +206,12 @@ Contributions are highly appreciated and encouraged! Don't hesitate to
 participate to discussions in the issues, propose new features and ask for
 help.
 
-If you are just starting out with Rust, there are a series of issus that are
+If you are just starting out with Rust, there are a series of issues that are
 tagged [E-Easy] and **we will gladly mentor you** so that you can successfully
 go through the process of fixing a bug or adding a new feature! Let us know if
 you need any help.
 
-For more info about contributing, check out our [contribution guide] who helps
+For more info about contributing, check out our [contribution guide] which helps
 you go through the build and contribution process!
 
 There is also a [rendered version][master-docs] of the latest API docs

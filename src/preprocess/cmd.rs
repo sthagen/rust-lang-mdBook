@@ -43,7 +43,7 @@ impl CmdPreprocessor {
     /// A convenience function custom preprocessors can use to parse the input
     /// written to `stdin` by a `CmdRenderer`.
     pub fn parse_input<R: Read>(reader: R) -> Result<(PreprocessorContext, Book)> {
-        serde_json::from_reader(reader).chain_err(|| "Unable to parse the input")
+        serde_json::from_reader(reader).with_context(|| "Unable to parse the input")
     }
 
     fn write_input_to_child(&self, child: &mut Child, book: &Book, ctx: &PreprocessorContext) {
@@ -100,7 +100,7 @@ impl Preprocessor for CmdPreprocessor {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
-            .chain_err(|| {
+            .with_context(|| {
                 format!(
                     "Unable to start the \"{}\" preprocessor. Is it installed?",
                     self.name()
@@ -109,17 +109,28 @@ impl Preprocessor for CmdPreprocessor {
 
         self.write_input_to_child(&mut child, &book, ctx);
 
-        let output = child
-            .wait_with_output()
-            .chain_err(|| "Error waiting for the preprocessor to complete")?;
+        let output = child.wait_with_output().with_context(|| {
+            format!(
+                "Error waiting for the \"{}\" preprocessor to complete",
+                self.name
+            )
+        })?;
 
         trace!("{} exited with output: {:?}", self.cmd, output);
         ensure!(
             output.status.success(),
-            "The preprocessor exited unsuccessfully"
+            format!(
+                "The \"{}\" preprocessor exited unsuccessfully with {} status",
+                self.name, output.status
+            )
         );
 
-        serde_json::from_slice(&output.stdout).chain_err(|| "Unable to parse the preprocessed book")
+        serde_json::from_slice(&output.stdout).with_context(|| {
+            format!(
+                "Unable to parse the preprocessed book from \"{}\" processor",
+                self.name
+            )
+        })
     }
 
     fn supports_renderer(&self, renderer: &str) -> bool {
@@ -170,15 +181,15 @@ mod tests {
     use crate::MDBook;
     use std::path::Path;
 
-    fn book_example() -> MDBook {
-        let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("book-example");
+    fn guide() -> MDBook {
+        let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("guide");
         MDBook::load(example).unwrap()
     }
 
     #[test]
     fn round_trip_write_and_parse_input() {
         let cmd = CmdPreprocessor::new("test".to_string(), "test".to_string());
-        let md = book_example();
+        let md = guide();
         let ctx = PreprocessorContext::new(
             md.root.clone(),
             md.config.clone(),

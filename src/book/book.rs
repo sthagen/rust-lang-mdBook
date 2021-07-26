@@ -14,14 +14,15 @@ pub fn load_book<P: AsRef<Path>>(src_dir: P, cfg: &BuildConfig) -> Result<Book> 
     let summary_md = src_dir.join("SUMMARY.md");
 
     let mut summary_content = String::new();
-    File::open(summary_md)
-        .chain_err(|| "Couldn't open SUMMARY.md")?
+    File::open(&summary_md)
+        .with_context(|| format!("Couldn't open SUMMARY.md in {:?} directory", src_dir))?
         .read_to_string(&mut summary_content)?;
 
-    let summary = parse_summary(&summary_content).chain_err(|| "Summary parsing failed")?;
+    let summary = parse_summary(&summary_content)
+        .with_context(|| format!("Summary parsing failed for file={:?}", summary_md))?;
 
     if cfg.create_missing {
-        create_missing(&src_dir, &summary).chain_err(|| "Unable to create missing chapters")?;
+        create_missing(&src_dir, &summary).with_context(|| "Unable to create missing chapters")?;
     }
 
     load_book_from_disk(&summary, src_dir)
@@ -39,17 +40,21 @@ fn create_missing(src_dir: &Path, summary: &Summary) -> Result<()> {
         let next = items.pop().expect("already checked");
 
         if let SummaryItem::Link(ref link) = *next {
-            let filename = src_dir.join(&link.location);
-            if !filename.exists() {
-                if let Some(parent) = filename.parent() {
-                    if !parent.exists() {
-                        fs::create_dir_all(parent)?;
+            if let Some(ref location) = link.location {
+                let filename = src_dir.join(location);
+                if !filename.exists() {
+                    if let Some(parent) = filename.parent() {
+                        if !parent.exists() {
+                            fs::create_dir_all(parent)?;
+                        }
                     }
-                }
-                debug!("Creating missing file {}", filename.display());
+                    debug!("Creating missing file {}", filename.display());
 
-                let mut f = File::create(&filename)?;
-                writeln!(f, "# {}", link.name)?;
+                    let mut f = File::create(&filename).with_context(|| {
+                        format!("Unable to create missing file: {}", filename.display())
+                    })?;
+                    writeln!(f, "# {}", link.name)?;
+                }
             }
 
             items.extend(&link.nested_items);
@@ -61,7 +66,7 @@ fn create_missing(src_dir: &Path, summary: &Summary) -> Result<()> {
 
 /// A dumb tree structure representing a book.
 ///
-/// For the moment a book is just a collection of `BookItems` which are
+/// For the moment a book is just a collection of [`BookItems`] which are
 /// accessible by either iterating (immutably) over the book with [`iter()`], or
 /// recursively applying a closure to each section to mutate the chapters, using
 /// [`for_each_mut()`].
@@ -131,6 +136,8 @@ pub enum BookItem {
     Chapter(Chapter),
     /// A section separator.
     Separator,
+    /// A part title.
+    PartTitle(String),
 }
 
 impl From<Chapter> for BookItem {
@@ -152,8 +159,10 @@ pub struct Chapter {
     /// Nested items.
     pub sub_items: Vec<BookItem>,
     /// The chapter's location, relative to the `SUMMARY.md` file.
-    pub path: PathBuf,
-    /// An ordered list of the names of each chapter above this one, in the hierarchy.
+    pub path: Option<PathBuf>,
+    /// The chapter's source file, relative to the `SUMMARY.md` file.
+    pub source_path: Option<PathBuf>,
+    /// An ordered list of the names of each chapter above this one in the hierarchy.
     pub parent_names: Vec<String>,
 }
 
@@ -162,16 +171,36 @@ impl Chapter {
     pub fn new<P: Into<PathBuf>>(
         name: &str,
         content: String,
-        path: P,
+        p: P,
         parent_names: Vec<String>,
     ) -> Chapter {
+        let path: PathBuf = p.into();
         Chapter {
             name: name.to_string(),
             content,
-            path: path.into(),
+            path: Some(path.clone()),
+            source_path: Some(path),
             parent_names,
             ..Default::default()
         }
+    }
+
+    /// Create a new draft chapter that is not attached to a source markdown file (and thus
+    /// has no content).
+    pub fn new_draft(name: &str, parent_names: Vec<String>) -> Self {
+        Chapter {
+            name: name.to_string(),
+            content: String::new(),
+            path: None,
+            source_path: None,
+            parent_names,
+            ..Default::default()
+        }
+    }
+
+    /// Check if the chapter is a draft chapter, meaning it has no path to a source markdown file.
+    pub fn is_draft_chapter(&self) -> bool {
+        self.path.is_none()
     }
 }
 
@@ -202,16 +231,17 @@ pub(crate) fn load_book_from_disk<P: AsRef<Path>>(summary: &Summary, src_dir: P)
     })
 }
 
-fn load_summary_item<P: AsRef<Path>>(
+fn load_summary_item<P: AsRef<Path> + Clone>(
     item: &SummaryItem,
     src_dir: P,
     parent_names: Vec<String>,
 ) -> Result<BookItem> {
-    match *item {
+    match item {
         SummaryItem::Separator => Ok(BookItem::Separator),
         SummaryItem::Link(ref link) => {
             load_chapter(link, src_dir, parent_names).map(BookItem::Chapter)
         }
+        SummaryItem::PartTitle(title) => Ok(BookItem::PartTitle(title.clone())),
     }
 }
 
@@ -220,28 +250,40 @@ fn load_chapter<P: AsRef<Path>>(
     src_dir: P,
     parent_names: Vec<String>,
 ) -> Result<Chapter> {
-    debug!("Loading {} ({})", link.name, link.location.display());
     let src_dir = src_dir.as_ref();
 
-    let location = if link.location.is_absolute() {
-        link.location.clone()
+    let mut ch = if let Some(ref link_location) = link.location {
+        debug!("Loading {} ({})", link.name, link_location.display());
+
+        let location = if link_location.is_absolute() {
+            link_location.clone()
+        } else {
+            src_dir.join(link_location)
+        };
+
+        let mut f = File::open(&location)
+            .with_context(|| format!("Chapter file not found, {}", link_location.display()))?;
+
+        let mut content = String::new();
+        f.read_to_string(&mut content).with_context(|| {
+            format!("Unable to read \"{}\" ({})", link.name, location.display())
+        })?;
+
+        if content.as_bytes().starts_with(b"\xef\xbb\xbf") {
+            content.replace_range(..3, "");
+        }
+
+        let stripped = location
+            .strip_prefix(&src_dir)
+            .expect("Chapters are always inside a book");
+
+        Chapter::new(&link.name, content, stripped, parent_names.clone())
     } else {
-        src_dir.join(&link.location)
+        Chapter::new_draft(&link.name, parent_names.clone())
     };
 
-    let mut f = File::open(&location)
-        .chain_err(|| format!("Chapter file not found, {}", link.location.display()))?;
+    let mut sub_item_parents = parent_names;
 
-    let mut content = String::new();
-    f.read_to_string(&mut content)
-        .chain_err(|| format!("Unable to read \"{}\" ({})", link.name, location.display()))?;
-
-    let stripped = location
-        .strip_prefix(&src_dir)
-        .expect("Chapters are always inside a book");
-
-    let mut sub_item_parents = parent_names.clone();
-    let mut ch = Chapter::new(&link.name, content, stripped, parent_names);
     ch.number = link.number.clone();
 
     sub_item_parents.push(link.name.clone());
@@ -262,8 +304,6 @@ fn load_chapter<P: AsRef<Path>>(
 ///
 /// This struct shouldn't be created directly, instead prefer the
 /// [`Book::iter()`] method.
-///
-/// [`Book::iter()`]: struct.Book.html#method.iter
 pub struct BookItems<'a> {
     items: VecDeque<&'a BookItem>,
 }
@@ -361,6 +401,29 @@ And here is some \
     }
 
     #[test]
+    fn load_a_single_chapter_with_utf8_bom_from_disk() {
+        let temp_dir = TempFileBuilder::new().prefix("book").tempdir().unwrap();
+
+        let chapter_path = temp_dir.path().join("chapter_1.md");
+        File::create(&chapter_path)
+            .unwrap()
+            .write_all(("\u{feff}".to_owned() + DUMMY_SRC).as_bytes())
+            .unwrap();
+
+        let link = Link::new("Chapter 1", chapter_path);
+
+        let should_be = Chapter::new(
+            "Chapter 1",
+            DUMMY_SRC.to_string(),
+            "chapter_1.md",
+            Vec::new(),
+        );
+
+        let got = load_chapter(&link, temp_dir.path(), Vec::new()).unwrap();
+        assert_eq!(got, should_be);
+    }
+
+    #[test]
     fn cant_load_a_nonexistent_chapter() {
         let link = Link::new("Chapter 1", "/foo/bar/baz.md");
 
@@ -376,7 +439,8 @@ And here is some \
             name: String::from("Nested Chapter 1"),
             content: String::from("Hello World!"),
             number: Some(SectionNumber(vec![1, 2])),
-            path: PathBuf::from("second.md"),
+            path: Some(PathBuf::from("second.md")),
+            source_path: Some(PathBuf::from("second.md")),
             parent_names: vec![String::from("Chapter 1")],
             sub_items: Vec::new(),
         };
@@ -384,7 +448,8 @@ And here is some \
             name: String::from("Chapter 1"),
             content: String::from(DUMMY_SRC),
             number: None,
-            path: PathBuf::from("chapter_1.md"),
+            path: Some(PathBuf::from("chapter_1.md")),
+            source_path: Some(PathBuf::from("chapter_1.md")),
             parent_names: Vec::new(),
             sub_items: vec![
                 BookItem::Chapter(nested.clone()),
@@ -408,7 +473,8 @@ And here is some \
             sections: vec![BookItem::Chapter(Chapter {
                 name: String::from("Chapter 1"),
                 content: String::from(DUMMY_SRC),
-                path: PathBuf::from("chapter_1.md"),
+                path: Some(PathBuf::from("chapter_1.md")),
+                source_path: Some(PathBuf::from("chapter_1.md")),
                 ..Default::default()
             })],
             ..Default::default()
@@ -448,7 +514,8 @@ And here is some \
                     name: String::from("Chapter 1"),
                     content: String::from(DUMMY_SRC),
                     number: None,
-                    path: PathBuf::from("Chapter_1/index.md"),
+                    path: Some(PathBuf::from("Chapter_1/index.md")),
+                    source_path: Some(PathBuf::from("Chapter_1/index.md")),
                     parent_names: Vec::new(),
                     sub_items: vec![
                         BookItem::Chapter(Chapter::new(
@@ -500,7 +567,8 @@ And here is some \
                     name: String::from("Chapter 1"),
                     content: String::from(DUMMY_SRC),
                     number: None,
-                    path: PathBuf::from("Chapter_1/index.md"),
+                    path: Some(PathBuf::from("Chapter_1/index.md")),
+                    source_path: Some(PathBuf::from("Chapter_1/index.md")),
                     parent_names: Vec::new(),
                     sub_items: vec![
                         BookItem::Chapter(Chapter::new(
@@ -537,9 +605,10 @@ And here is some \
         let summary = Summary {
             numbered_chapters: vec![SummaryItem::Link(Link {
                 name: String::from("Empty"),
-                location: PathBuf::from(""),
+                location: Some(PathBuf::from("")),
                 ..Default::default()
             })],
+
             ..Default::default()
         };
 
@@ -556,7 +625,7 @@ And here is some \
         let summary = Summary {
             numbered_chapters: vec![SummaryItem::Link(Link {
                 name: String::from("nested"),
-                location: dir,
+                location: Some(dir),
                 ..Default::default()
             })],
             ..Default::default()

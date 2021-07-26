@@ -31,11 +31,9 @@ jobs:
             rust: stable
           - build: msrv
             os: ubuntu-latest
-            rust: 1.35.0
+            rust: 1.46.0
     steps:
     - uses: actions/checkout@master
-    - name: Install Rustup
-      run: bash ci/install-rustup.sh ${{ matrix.rust }}
     - name: Install Rust
       run: bash ci/install-rust.sh ${{ matrix.rust }}
     - name: Build and run tests

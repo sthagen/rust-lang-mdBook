@@ -5,6 +5,7 @@
 //!
 //! [1]: ../index.html
 
+#[allow(clippy::module_inception)]
 mod book;
 mod init;
 mod summary;
@@ -27,7 +28,7 @@ use crate::preprocess::{
 use crate::renderer::{CmdRenderer, HtmlHandlebars, MarkdownRenderer, RenderContext, Renderer};
 use crate::utils;
 
-use crate::config::Config;
+use crate::config::{Config, RustEdition};
 
 /// The object used to manage and build a book.
 pub struct MDBook {
@@ -39,7 +40,7 @@ pub struct MDBook {
     pub book: Book,
     renderers: Vec<Box<dyn Renderer>>,
 
-    /// List of pre-processors to be run on the book
+    /// List of pre-processors to be run on the book.
     preprocessors: Vec<Box<dyn Preprocessor>>,
 }
 
@@ -77,7 +78,7 @@ impl MDBook {
         MDBook::load_with_config(book_root, config)
     }
 
-    /// Load a book from its root directory using a custom config.
+    /// Load a book from its root directory using a custom `Config`.
     pub fn load_with_config<P: Into<PathBuf>>(book_root: P, config: Config) -> Result<MDBook> {
         let root = book_root.into();
 
@@ -96,7 +97,7 @@ impl MDBook {
         })
     }
 
-    /// Load a book from its root directory using a custom config and a custom summary.
+    /// Load a book from its root directory using a custom `Config` and a custom summary.
     pub fn load_with_config_and_summary<P: Into<PathBuf>>(
         book_root: P,
         config: Config,
@@ -120,19 +121,18 @@ impl MDBook {
     }
 
     /// Returns a flat depth-first iterator over the elements of the book,
-    /// it returns an [BookItem enum](bookitem.html):
+    /// it returns a [`BookItem`] enum:
     /// `(section: String, bookitem: &BookItem)`
     ///
     /// ```no_run
     /// # use mdbook::MDBook;
     /// # use mdbook::book::BookItem;
-    /// # #[allow(unused_variables)]
-    /// # fn main() {
     /// # let book = MDBook::load("mybook").unwrap();
     /// for item in book.iter() {
     ///     match *item {
     ///         BookItem::Chapter(ref chapter) => {},
     ///         BookItem::Separator => {},
+    ///         BookItem::PartTitle(ref title) => {}
     ///     }
     /// }
     ///
@@ -143,7 +143,6 @@ impl MDBook {
     /// // 2. Chapter 2
     /// //
     /// // etc.
-    /// # }
     /// ```
     pub fn iter(&self) -> BookItems<'_> {
         self.book.iter()
@@ -181,8 +180,8 @@ impl MDBook {
         Ok(())
     }
 
-    /// Run the entire build process for a particular `Renderer`.
-    fn execute_build_process(&self, renderer: &dyn Renderer) -> Result<()> {
+    /// Run the entire build process for a particular [`Renderer`].
+    pub fn execute_build_process(&self, renderer: &dyn Renderer) -> Result<()> {
         let mut preprocessed_book = self.book.clone();
         let preprocess_ctx = PreprocessorContext::new(
             self.root.clone(),
@@ -197,37 +196,34 @@ impl MDBook {
             }
         }
 
-        info!("Running the {} backend", renderer.name());
-        self.render(&preprocessed_book, renderer)?;
-
-        Ok(())
-    }
-
-    fn render(&self, preprocessed_book: &Book, renderer: &dyn Renderer) -> Result<()> {
         let name = renderer.name();
         let build_dir = self.build_dir_for(name);
 
-        let render_context = RenderContext::new(
+        let mut render_context = RenderContext::new(
             self.root.clone(),
-            preprocessed_book.clone(),
+            preprocessed_book,
             self.config.clone(),
             build_dir,
         );
+        render_context
+            .chapter_titles
+            .extend(preprocess_ctx.chapter_titles.borrow_mut().drain());
 
+        info!("Running the {} backend", renderer.name());
         renderer
             .render(&render_context)
-            .chain_err(|| "Rendering failed")
+            .with_context(|| "Rendering failed")
     }
 
     /// You can change the default renderer to another one by using this method.
-    /// The only requirement is for your renderer to implement the [`Renderer`
-    /// trait](../renderer/trait.Renderer.html)
+    /// The only requirement is that your renderer implement the [`Renderer`]
+    /// trait.
     pub fn with_renderer<R: Renderer + 'static>(&mut self, renderer: R) -> &mut Self {
         self.renderers.push(Box::new(renderer));
         self
     }
 
-    /// Register a [`Preprocessor`](../preprocess/trait.Preprocessor.html) to be used when rendering the book.
+    /// Register a [`Preprocessor`] to be used when rendering the book.
     pub fn with_preprocessor<P: Preprocessor + 'static>(&mut self, preprocessor: P) -> &mut Self {
         self.preprocessors.push(Box::new(preprocessor));
         self
@@ -251,31 +247,55 @@ impl MDBook {
         // Index Preprocessor is disabled so that chapter paths continue to point to the
         // actual markdown files.
 
+        let mut failed = false;
         for item in book.iter() {
             if let BookItem::Chapter(ref ch) = *item {
-                if !ch.path.as_os_str().is_empty() {
-                    let path = self.source_dir().join(&ch.path);
-                    info!("Testing file: {:?}", path);
+                let chapter_path = match ch.path {
+                    Some(ref path) if !path.as_os_str().is_empty() => path,
+                    _ => continue,
+                };
 
-                    // write preprocessed file to tempdir
-                    let path = temp_dir.path().join(&ch.path);
-                    let mut tmpf = utils::fs::create_file(&path)?;
-                    tmpf.write_all(ch.content.as_bytes())?;
+                let path = self.source_dir().join(&chapter_path);
+                info!("Testing file: {:?}", path);
 
-                    let output = Command::new("rustdoc")
-                        .arg(&path)
-                        .arg("--test")
-                        .args(&library_args)
-                        .output()?;
+                // write preprocessed file to tempdir
+                let path = temp_dir.path().join(&chapter_path);
+                let mut tmpf = utils::fs::create_file(&path)?;
+                tmpf.write_all(ch.content.as_bytes())?;
 
-                    if !output.status.success() {
-                        bail!(ErrorKind::Subprocess(
-                            "Rustdoc returned an error".to_string(),
-                            output
-                        ));
+                let mut cmd = Command::new("rustdoc");
+                cmd.arg(&path).arg("--test").args(&library_args);
+
+                if let Some(edition) = self.config.rust.edition {
+                    match edition {
+                        RustEdition::E2015 => {
+                            cmd.args(&["--edition", "2015"]);
+                        }
+                        RustEdition::E2018 => {
+                            cmd.args(&["--edition", "2018"]);
+                        }
+                        RustEdition::E2021 => {
+                            cmd.args(&["--edition", "2021"])
+                                .args(&["-Z", "unstable-options"]);
+                        }
                     }
                 }
+
+                let output = cmd.output()?;
+
+                if !output.status.success() {
+                    failed = true;
+                    error!(
+                        "rustdoc returned an error:\n\
+                        \n--- stdout\n{}\n--- stderr\n{}",
+                        String::from_utf8_lossy(&output.stdout),
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                }
             }
+        }
+        if failed {
+            bail!("One or more tests failed");
         }
         Ok(())
     }
@@ -284,7 +304,7 @@ impl MDBook {
     /// artefacts.
     ///
     /// If there is only 1 renderer, put it in the directory pointed to by the
-    /// `build.build_dir` key in `Config`. If there is more than one then the
+    /// `build.build_dir` key in [`Config`]. If there is more than one then the
     /// renderer gets its own directory within the main build dir.
     ///
     /// i.e. If there were only one renderer (in this case, the HTML renderer):
@@ -395,7 +415,7 @@ fn interpret_custom_preprocessor(key: &str, table: &Value) -> Box<CmdPreprocesso
         .map(ToString::to_string)
         .unwrap_or_else(|| format!("mdbook-{}", key));
 
-    Box::new(CmdPreprocessor::new(key.to_string(), command.to_string()))
+    Box::new(CmdPreprocessor::new(key.to_string(), command))
 }
 
 fn interpret_custom_renderer(key: &str, table: &Value) -> Box<CmdRenderer> {
@@ -408,7 +428,7 @@ fn interpret_custom_renderer(key: &str, table: &Value) -> Box<CmdRenderer> {
 
     let command = table_dot_command.unwrap_or_else(|| format!("mdbook-{}", key));
 
-    Box::new(CmdRenderer::new(key.to_string(), command.to_string()))
+    Box::new(CmdRenderer::new(key.to_string(), command))
 }
 
 /// Check whether we should run a particular `Preprocessor` in combination

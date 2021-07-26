@@ -1,17 +1,18 @@
 use crate::book::{Book, BookItem};
-use crate::config::{Config, HtmlConfig, Playpen};
+use crate::config::{BookConfig, Config, HtmlConfig, Playground, RustEdition};
 use crate::errors::*;
 use crate::renderer::html_handlebars::helpers;
 use crate::renderer::{RenderContext, Renderer};
-use crate::theme::{self, playpen_editor, Theme};
+use crate::theme::{self, playground_editor, Theme};
 use crate::utils;
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
+use crate::utils::fs::get_404_output_file;
 use handlebars::Handlebars;
 use regex::{Captures, Regex};
 
@@ -30,82 +31,168 @@ impl HtmlHandlebars {
         print_content: &mut String,
     ) -> Result<()> {
         // FIXME: This should be made DRY-er and rely less on mutable state
-        if let BookItem::Chapter(ref ch) = *item {
-            let content = ch.content.clone();
-            let content = utils::render_markdown(&content, ctx.html_config.curly_quotes);
 
-            let fixed_content = utils::render_markdown_with_path(
-                &ch.content,
-                ctx.html_config.curly_quotes,
-                Some(&ch.path),
-            );
-            print_content.push_str(&fixed_content);
+        let (ch, path) = match item {
+            BookItem::Chapter(ch) if !ch.is_draft_chapter() => (ch, ch.path.as_ref().unwrap()),
+            _ => return Ok(()),
+        };
 
-            // Update the context with data for this file
-            let path = ch
-                .path
-                .to_str()
-                .chain_err(|| "Could not convert path to str")?;
-            let filepath = Path::new(&ch.path).with_extension("html");
+        if let Some(ref edit_url_template) = ctx.html_config.edit_url_template {
+            let full_path = ctx.book_config.src.to_str().unwrap_or_default().to_owned()
+                + "/"
+                + ch.source_path
+                    .clone()
+                    .unwrap_or_default()
+                    .to_str()
+                    .unwrap_or_default();
 
-            // "print.html" is used for the print page.
-            if ch.path == Path::new("print.md") {
-                bail!(ErrorKind::ReservedFilenameError(ch.path.clone()));
-            };
+            let edit_url = edit_url_template.replace("{path}", &full_path);
+            ctx.data
+                .insert("git_repository_edit_url".to_owned(), json!(edit_url));
+        }
 
-            // Non-lexical lifetimes needed :'(
-            let title: String;
-            {
-                let book_title = ctx
-                    .data
-                    .get("book_title")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("");
-                title = ch.name.clone() + " - " + book_title;
-            }
+        let content = ch.content.clone();
+        let content = utils::render_markdown(&content, ctx.html_config.curly_quotes);
 
-            ctx.data.insert("path".to_owned(), json!(path));
-            ctx.data.insert("content".to_owned(), json!(content));
-            ctx.data.insert("chapter_title".to_owned(), json!(ch.name));
-            ctx.data.insert("title".to_owned(), json!(title));
-            ctx.data.insert(
-                "path_to_root".to_owned(),
-                json!(utils::fs::path_to_root(&ch.path)),
-            );
-            if let Some(ref section) = ch.number {
-                ctx.data
-                    .insert("section".to_owned(), json!(section.to_string()));
-            }
+        let fixed_content = utils::render_markdown_with_path(
+            &ch.content,
+            ctx.html_config.curly_quotes,
+            Some(&path),
+        );
+        if !ctx.is_index {
+            // Add page break between chapters
+            // See https://developer.mozilla.org/en-US/docs/Web/CSS/break-before and https://developer.mozilla.org/en-US/docs/Web/CSS/page-break-before
+            // Add both two CSS properties because of the compatibility issue
+            print_content
+                .push_str(r#"<div style="break-before: page; page-break-before: always;"></div>"#);
+        }
+        print_content.push_str(&fixed_content);
 
-            // Render the handlebars template with the data
-            debug!("Render template");
-            let rendered = ctx.handlebars.render("index", &ctx.data)?;
+        // Update the context with data for this file
+        let ctx_path = path
+            .to_str()
+            .with_context(|| "Could not convert path to str")?;
+        let filepath = Path::new(&ctx_path).with_extension("html");
 
-            let rendered = self.post_process(rendered, &ctx.html_config.playpen);
+        // "print.html" is used for the print page.
+        if path == Path::new("print.md") {
+            bail!("{} is reserved for internal use", path.display());
+        };
 
-            // Write to file
-            debug!("Creating {}", filepath.display());
-            utils::fs::write_file(&ctx.destination, &filepath, rendered.as_bytes())?;
+        let book_title = ctx
+            .data
+            .get("book_title")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
 
-            if ctx.is_index {
-                ctx.data.insert("path".to_owned(), json!("index.md"));
-                ctx.data.insert("path_to_root".to_owned(), json!(""));
-                ctx.data.insert("is_index".to_owned(), json!("true"));
-                let rendered_index = ctx.handlebars.render("index", &ctx.data)?;
-                let rendered_index = self.post_process(rendered_index, &ctx.html_config.playpen);
-                debug!("Creating index.html from {}", path);
-                utils::fs::write_file(&ctx.destination, "index.html", rendered_index.as_bytes())?;
-            }
+        let title = if let Some(title) = ctx.chapter_titles.get(path) {
+            title.clone()
+        } else if book_title.is_empty() {
+            ch.name.clone()
+        } else {
+            ch.name.clone() + " - " + book_title
+        };
+
+        ctx.data.insert("path".to_owned(), json!(path));
+        ctx.data.insert("content".to_owned(), json!(content));
+        ctx.data.insert("chapter_title".to_owned(), json!(ch.name));
+        ctx.data.insert("title".to_owned(), json!(title));
+        ctx.data.insert(
+            "path_to_root".to_owned(),
+            json!(utils::fs::path_to_root(&path)),
+        );
+        if let Some(ref section) = ch.number {
+            ctx.data
+                .insert("section".to_owned(), json!(section.to_string()));
+        }
+
+        // Render the handlebars template with the data
+        debug!("Render template");
+        let rendered = ctx.handlebars.render("index", &ctx.data)?;
+
+        let rendered = self.post_process(rendered, &ctx.html_config.playground, ctx.edition);
+
+        // Write to file
+        debug!("Creating {}", filepath.display());
+        utils::fs::write_file(&ctx.destination, &filepath, rendered.as_bytes())?;
+
+        if ctx.is_index {
+            ctx.data.insert("path".to_owned(), json!("index.md"));
+            ctx.data.insert("path_to_root".to_owned(), json!(""));
+            ctx.data.insert("is_index".to_owned(), json!("true"));
+            let rendered_index = ctx.handlebars.render("index", &ctx.data)?;
+            let rendered_index =
+                self.post_process(rendered_index, &ctx.html_config.playground, ctx.edition);
+            debug!("Creating index.html from {}", ctx_path);
+            utils::fs::write_file(&ctx.destination, "index.html", rendered_index.as_bytes())?;
         }
 
         Ok(())
     }
 
+    fn render_404(
+        &self,
+        ctx: &RenderContext,
+        html_config: &HtmlConfig,
+        src_dir: &Path,
+        handlebars: &mut Handlebars<'_>,
+        data: &mut serde_json::Map<String, serde_json::Value>,
+    ) -> Result<()> {
+        let destination = &ctx.destination;
+        let content_404 = if let Some(ref filename) = html_config.input_404 {
+            let path = src_dir.join(filename);
+            std::fs::read_to_string(&path)
+                .with_context(|| format!("unable to open 404 input file {:?}", path))?
+        } else {
+            // 404 input not explicitly configured try the default file 404.md
+            let default_404_location = src_dir.join("404.md");
+            if default_404_location.exists() {
+                std::fs::read_to_string(&default_404_location).with_context(|| {
+                    format!("unable to open 404 input file {:?}", default_404_location)
+                })?
+            } else {
+                "# Document not found (404)\n\nThis URL is invalid, sorry. Please use the \
+                navigation bar or search to continue."
+                    .to_string()
+            }
+        };
+        let html_content_404 = utils::render_markdown(&content_404, html_config.curly_quotes);
+
+        let mut data_404 = data.clone();
+        let base_url = if let Some(site_url) = &html_config.site_url {
+            site_url
+        } else {
+            debug!(
+                "HTML 'site-url' parameter not set, defaulting to '/'. Please configure \
+                this to ensure the 404 page work correctly, especially if your site is hosted in a \
+                subdirectory on the HTTP server."
+            );
+            "/"
+        };
+        data_404.insert("base_url".to_owned(), json!(base_url));
+        // Set a dummy path to ensure other paths (e.g. in the TOC) are generated correctly
+        data_404.insert("path".to_owned(), json!("404.md"));
+        data_404.insert("content".to_owned(), json!(html_content_404));
+        let rendered = handlebars.render("index", &data_404)?;
+
+        let rendered =
+            self.post_process(rendered, &html_config.playground, ctx.config.rust.edition);
+        let output_file = get_404_output_file(&html_config.input_404);
+        utils::fs::write_file(&destination, output_file, rendered.as_bytes())?;
+        debug!("Creating 404.html ✓");
+        Ok(())
+    }
+
     #[cfg_attr(feature = "cargo-clippy", allow(clippy::let_and_return))]
-    fn post_process(&self, rendered: String, playpen_config: &Playpen) -> String {
+    fn post_process(
+        &self,
+        rendered: String,
+        playground_config: &Playground,
+        edition: Option<RustEdition>,
+    ) -> String {
         let rendered = build_header_links(&rendered);
         let rendered = fix_code_blocks(&rendered);
-        let rendered = add_playpen_pre(&rendered, playpen_config);
+        let rendered = add_playground_pre(&rendered, playground_config, edition);
 
         rendered
     }
@@ -121,15 +208,26 @@ impl HtmlHandlebars {
         write_file(
             destination,
             ".nojekyll",
-            b"This file makes sure that Github Pages doesn't process mdBook's output.",
+            b"This file makes sure that Github Pages doesn't process mdBook's output.\n",
         )?;
+
+        if let Some(cname) = &html_config.cname {
+            write_file(destination, "CNAME", format!("{}\n", cname).as_bytes())?;
+        }
 
         write_file(destination, "book.js", &theme.js)?;
         write_file(destination, "css/general.css", &theme.general_css)?;
         write_file(destination, "css/chrome.css", &theme.chrome_css)?;
-        write_file(destination, "css/print.css", &theme.print_css)?;
+        if html_config.print.enable {
+            write_file(destination, "css/print.css", &theme.print_css)?;
+        }
         write_file(destination, "css/variables.css", &theme.variables_css)?;
-        write_file(destination, "favicon.png", &theme.favicon)?;
+        if let Some(contents) = &theme.favicon_png {
+            write_file(destination, "favicon.png", &contents)?;
+        }
+        if let Some(contents) = &theme.favicon_svg {
+            write_file(destination, "favicon.svg", &contents)?;
+        }
         write_file(destination, "highlight.css", &theme.highlight_css)?;
         write_file(destination, "tomorrow-night.css", &theme.tomorrow_night_css)?;
         write_file(destination, "ayu-highlight.css", &theme.ayu_highlight_css)?;
@@ -170,20 +268,38 @@ impl HtmlHandlebars {
             "FontAwesome/fonts/FontAwesome.ttf",
             theme::FONT_AWESOME_TTF,
         )?;
+        if html_config.copy_fonts {
+            write_file(destination, "fonts/fonts.css", theme::fonts::CSS)?;
+            for (file_name, contents) in theme::fonts::LICENSES.iter() {
+                write_file(destination, file_name, contents)?;
+            }
+            for (file_name, contents) in theme::fonts::OPEN_SANS.iter() {
+                write_file(destination, file_name, contents)?;
+            }
+            write_file(
+                destination,
+                theme::fonts::SOURCE_CODE_PRO.0,
+                theme::fonts::SOURCE_CODE_PRO.1,
+            )?;
+        }
 
-        let playpen_config = &html_config.playpen;
+        let playground_config = &html_config.playground;
 
         // Ace is a very large dependency, so only load it when requested
-        if playpen_config.editable && playpen_config.copy_js {
+        if playground_config.editable && playground_config.copy_js {
             // Load the editor
-            write_file(destination, "editor.js", playpen_editor::JS)?;
-            write_file(destination, "ace.js", playpen_editor::ACE_JS)?;
-            write_file(destination, "mode-rust.js", playpen_editor::MODE_RUST_JS)?;
-            write_file(destination, "theme-dawn.js", playpen_editor::THEME_DAWN_JS)?;
+            write_file(destination, "editor.js", playground_editor::JS)?;
+            write_file(destination, "ace.js", playground_editor::ACE_JS)?;
+            write_file(destination, "mode-rust.js", playground_editor::MODE_RUST_JS)?;
+            write_file(
+                destination,
+                "theme-dawn.js",
+                playground_editor::THEME_DAWN_JS,
+            )?;
             write_file(
                 destination,
                 "theme-tomorrow_night.js",
-                playpen_editor::THEME_TOMORROW_NIGHT_JS,
+                playground_editor::THEME_TOMORROW_NIGHT_JS,
             )?;
         }
 
@@ -208,7 +324,7 @@ impl HtmlHandlebars {
         );
     }
 
-    fn register_hbs_helpers(&self, handlebars: &mut Handlebars, html_config: &HtmlConfig) {
+    fn register_hbs_helpers(&self, handlebars: &mut Handlebars<'_>, html_config: &HtmlConfig) {
         handlebars.register_helper(
             "toc",
             Box::new(helpers::toc::RenderToc {
@@ -237,7 +353,7 @@ impl HtmlHandlebars {
             let output_location = destination.join(custom_file);
             if let Some(parent) = output_location.parent() {
                 fs::create_dir_all(parent)
-                    .chain_err(|| format!("Unable to create {}", parent.display()))?;
+                    .with_context(|| format!("Unable to create {}", parent.display()))?;
             }
             debug!(
                 "Copying {} -> {}",
@@ -245,7 +361,7 @@ impl HtmlHandlebars {
                 output_location.display()
             );
 
-            fs::copy(&input_location, &output_location).chain_err(|| {
+            fs::copy(&input_location, &output_location).with_context(|| {
                 format!(
                     "Unable to copy {} to {}",
                     input_location.display(),
@@ -253,6 +369,68 @@ impl HtmlHandlebars {
                 )
             })?;
         }
+
+        Ok(())
+    }
+
+    fn emit_redirects(
+        &self,
+        root: &Path,
+        handlebars: &Handlebars<'_>,
+        redirects: &HashMap<String, String>,
+    ) -> Result<()> {
+        if redirects.is_empty() {
+            return Ok(());
+        }
+
+        log::debug!("Emitting redirects");
+
+        for (original, new) in redirects {
+            log::debug!("Redirecting \"{}\" → \"{}\"", original, new);
+            // Note: all paths are relative to the build directory, so the
+            // leading slash in an absolute path means nothing (and would mess
+            // up `root.join(original)`).
+            let original = original.trim_start_matches('/');
+            let filename = root.join(original);
+            self.emit_redirect(handlebars, &filename, new)?;
+        }
+
+        Ok(())
+    }
+
+    fn emit_redirect(
+        &self,
+        handlebars: &Handlebars<'_>,
+        original: &Path,
+        destination: &str,
+    ) -> Result<()> {
+        if original.exists() {
+            // sanity check to avoid accidentally overwriting a real file.
+            let msg = format!(
+                "Not redirecting \"{}\" to \"{}\" because it already exists. Are you sure it needs to be redirected?",
+                original.display(),
+                destination,
+            );
+            return Err(Error::msg(msg));
+        }
+
+        if let Some(parent) = original.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Unable to ensure \"{}\" exists", parent.display()))?;
+        }
+
+        let ctx = json!({
+            "url": destination,
+        });
+        let f = File::create(original)?;
+        handlebars
+            .render_to_write("redirect", &ctx, f)
+            .with_context(|| {
+                format!(
+                    "Unable to create a redirect file at \"{}\"",
+                    original.display()
+                )
+            })?;
 
         Ok(())
     }
@@ -283,21 +461,23 @@ impl Renderer for HtmlHandlebars {
     }
 
     fn render(&self, ctx: &RenderContext) -> Result<()> {
+        let book_config = &ctx.config.book;
         let html_config = ctx.config.html_config().unwrap_or_default();
         let src_dir = ctx.root.join(&ctx.config.book.src);
         let destination = &ctx.destination;
         let book = &ctx.book;
+        let build_dir = ctx.root.join(&ctx.config.build.build_dir);
 
         if destination.exists() {
             utils::fs::remove_dir_content(destination)
-                .chain_err(|| "Unable to remove stale HTML output")?;
+                .with_context(|| "Unable to remove stale HTML output")?;
         }
 
         trace!("render");
         let mut handlebars = Handlebars::new();
 
         let theme_dir = match html_config.theme {
-            Some(ref theme) => theme.to_path_buf(),
+            Some(ref theme) => ctx.root.join(theme),
             None => ctx.root.join("theme"),
         };
 
@@ -316,19 +496,26 @@ impl Renderer for HtmlHandlebars {
         debug!("Register the index handlebars template");
         handlebars.register_template_string("index", String::from_utf8(theme.index.clone())?)?;
 
+        debug!("Register the head handlebars template");
+        handlebars.register_partial("head", String::from_utf8(theme.head.clone())?)?;
+
+        debug!("Register the redirect handlebars template");
+        handlebars
+            .register_template_string("redirect", String::from_utf8(theme.redirect.clone())?)?;
+
         debug!("Register the header handlebars template");
         handlebars.register_partial("header", String::from_utf8(theme.header.clone())?)?;
 
         debug!("Register handlebars helpers");
         self.register_hbs_helpers(&mut handlebars, &html_config);
 
-        let mut data = make_data(&ctx.root, &book, &ctx.config, &html_config)?;
+        let mut data = make_data(&ctx.root, &book, &ctx.config, &html_config, &theme)?;
 
         // Print version
         let mut print_content = String::new();
 
         fs::create_dir_all(&destination)
-            .chain_err(|| "Unexpected error when constructing destination path")?;
+            .with_context(|| "Unexpected error when constructing destination path")?;
 
         let mut is_index = true;
         for item in book.iter() {
@@ -337,10 +524,18 @@ impl Renderer for HtmlHandlebars {
                 destination: destination.to_path_buf(),
                 data: data.clone(),
                 is_index,
+                book_config: book_config.clone(),
                 html_config: html_config.clone(),
+                edition: ctx.config.rust.edition,
+                chapter_titles: &ctx.chapter_titles,
             };
             self.render_item(item, ctx, &mut print_content)?;
             is_index = false;
+        }
+
+        // Render 404 page
+        if html_config.input_404 != Some("".to_string()) {
+            self.render_404(ctx, &html_config, &src_dir, &mut handlebars, &mut data)?;
         }
 
         // Print version
@@ -350,19 +545,22 @@ impl Renderer for HtmlHandlebars {
         }
 
         // Render the handlebars template with the data
-        debug!("Render template");
-        let rendered = handlebars.render("index", &data)?;
+        if html_config.print.enable {
+            debug!("Render template");
+            let rendered = handlebars.render("index", &data)?;
 
-        let rendered = self.post_process(rendered, &html_config.playpen);
+            let rendered =
+                self.post_process(rendered, &html_config.playground, ctx.config.rust.edition);
 
-        utils::fs::write_file(&destination, "print.html", rendered.as_bytes())?;
-        debug!("Creating print.html ✓");
+            utils::fs::write_file(&destination, "print.html", rendered.as_bytes())?;
+            debug!("Creating print.html ✓");
+        }
 
         debug!("Copy static files");
         self.copy_static_files(&destination, &theme, &html_config)
-            .chain_err(|| "Unable to copy across static files")?;
+            .with_context(|| "Unable to copy across static files")?;
         self.copy_additional_css_and_js(&html_config, &ctx.root, &destination)
-            .chain_err(|| "Unable to copy across additional CSS and JS")?;
+            .with_context(|| "Unable to copy across additional CSS and JS")?;
 
         // Render search index
         #[cfg(feature = "search")]
@@ -373,8 +571,11 @@ impl Renderer for HtmlHandlebars {
             }
         }
 
-        // Copy all remaining files
-        utils::fs::copy_files_except_ext(&src_dir, &destination, true, &["md"])?;
+        self.emit_redirects(&ctx.destination, &handlebars, &html_config.redirect)
+            .context("Unable to emit redirects")?;
+
+        // Copy all remaining files, avoid a recursive copy from/to the book build dir
+        utils::fs::copy_files_except_ext(&src_dir, &destination, true, Some(&build_dir), &["md"])?;
 
         Ok(())
     }
@@ -385,6 +586,7 @@ fn make_data(
     book: &Book,
     config: &Config,
     html_config: &HtmlConfig,
+    theme: &Theme,
 ) -> Result<serde_json::Map<String, serde_json::Value>> {
     trace!("make_data");
 
@@ -401,7 +603,12 @@ fn make_data(
         "description".to_owned(),
         json!(config.book.description.clone().unwrap_or_default()),
     );
-    data.insert("favicon".to_owned(), json!("favicon.png"));
+    if theme.favicon_png.is_some() {
+        data.insert("favicon_png".to_owned(), json!("favicon.png"));
+    }
+    if theme.favicon_svg.is_some() {
+        data.insert("favicon_svg".to_owned(), json!("favicon.svg"));
+    }
     if let Some(ref livereload) = html_config.livereload_url {
         data.insert("livereload".to_owned(), json!(livereload));
     }
@@ -414,7 +621,7 @@ fn make_data(
 
     let preferred_dark_theme = match html_config.preferred_dark_theme {
         Some(ref theme) => theme.to_lowercase(),
-        None => default_theme,
+        None => "navy".to_string(),
     };
     data.insert(
         "preferred_dark_theme".to_owned(),
@@ -428,6 +635,10 @@ fn make_data(
 
     if html_config.mathjax_support {
         data.insert("mathjax_support".to_owned(), json!(true));
+    }
+
+    if html_config.copy_fonts {
+        data.insert("copy_fonts".to_owned(), json!(true));
     }
 
     // Add check to see if there is an additional style
@@ -454,18 +665,19 @@ fn make_data(
         data.insert("additional_js".to_owned(), json!(js));
     }
 
-    if html_config.playpen.editable && html_config.playpen.copy_js {
-        data.insert("playpen_js".to_owned(), json!(true));
-        if html_config.playpen.line_numbers {
-            data.insert("playpen_line_numbers".to_owned(), json!(true));
+    if html_config.playground.editable && html_config.playground.copy_js {
+        data.insert("playground_js".to_owned(), json!(true));
+        if html_config.playground.line_numbers {
+            data.insert("playground_line_numbers".to_owned(), json!(true));
         }
     }
-    if html_config.playpen.copyable {
-        data.insert("playpen_copyable".to_owned(), json!(true));
+    if html_config.playground.copyable {
+        data.insert("playground_copyable".to_owned(), json!(true));
     }
 
-    data.insert("fold_enable".to_owned(), json!((html_config.fold.enable)));
-    data.insert("fold_level".to_owned(), json!((html_config.fold.level)));
+    data.insert("print_enable".to_owned(), json!(html_config.print.enable));
+    data.insert("fold_enable".to_owned(), json!(html_config.fold.enable));
+    data.insert("fold_level".to_owned(), json!(html_config.fold.level));
 
     let search = html_config.search.clone();
     if cfg!(feature = "search") {
@@ -500,6 +712,9 @@ fn make_data(
         let mut chapter = BTreeMap::new();
 
         match *item {
+            BookItem::PartTitle(ref title) => {
+                chapter.insert("part".to_owned(), json!(title));
+            }
             BookItem::Chapter(ref ch) => {
                 if let Some(ref section) = ch.number {
                     chapter.insert("section".to_owned(), json!(section.to_string()));
@@ -511,11 +726,12 @@ fn make_data(
                 );
 
                 chapter.insert("name".to_owned(), json!(ch.name));
-                let path = ch
-                    .path
-                    .to_str()
-                    .chain_err(|| "Could not convert path to str")?;
-                chapter.insert("path".to_owned(), json!(path));
+                if let Some(ref path) = ch.path {
+                    let p = path
+                        .to_str()
+                        .with_context(|| "Could not convert path to str")?;
+                    chapter.insert("path".to_owned(), json!(p));
+                }
             }
             BookItem::Separator => {
                 chapter.insert("spacer".to_owned(), json!("_spacer_"));
@@ -567,7 +783,7 @@ fn insert_link_into_header(
     *id_count += 1;
 
     format!(
-        r##"<h{level}><a class="header" href="#{id}" id="{id}">{text}</a></h{level}>"##,
+        r##"<h{level} id="{id}"><a class="header" href="#{id}">{text}</a></h{level}>"##,
         level = level,
         id = id,
         text = content
@@ -600,7 +816,11 @@ fn fix_code_blocks(html: &str) -> String {
         .into_owned()
 }
 
-fn add_playpen_pre(html: &str, playpen_config: &Playpen) -> String {
+fn add_playground_pre(
+    html: &str,
+    playground_config: &Playground,
+    edition: Option<RustEdition>,
+) -> String {
     let regex = Regex::new(r##"((?s)<code[^>]?class="([^"]+)".*?>(.*?)</code>)"##).unwrap();
     regex
         .replace_all(html, |caps: &Captures<'_>| {
@@ -609,15 +829,33 @@ fn add_playpen_pre(html: &str, playpen_config: &Playpen) -> String {
             let code = &caps[3];
 
             if classes.contains("language-rust") {
-                if (!classes.contains("ignore") && !classes.contains("noplaypen"))
+                if (!classes.contains("ignore")
+                    && !classes.contains("noplayground")
+                    && !classes.contains("noplaypen"))
                     || classes.contains("mdbook-runnable")
                 {
+                    let contains_e2015 = classes.contains("edition2015");
+                    let contains_e2018 = classes.contains("edition2018");
+                    let contains_e2021 = classes.contains("edition2021");
+                    let edition_class = if contains_e2015 || contains_e2018 || contains_e2021 {
+                        // the user forced edition, we should not overwrite it
+                        ""
+                    } else {
+                        match edition {
+                            Some(RustEdition::E2015) => " edition2015",
+                            Some(RustEdition::E2018) => " edition2018",
+                            Some(RustEdition::E2021) => " edition2021",
+                            None => "",
+                        }
+                    };
+
                     // wrap the contents in an external pre block
                     format!(
-                        "<pre class=\"playpen\"><code class=\"{}\">{}</code></pre>",
+                        "<pre class=\"playground\"><code class=\"{}{}\">{}</code></pre>",
                         classes,
+                        edition_class,
                         {
-                            let content: Cow<'_, str> = if playpen_config.editable
+                            let content: Cow<'_, str> = if playground_config.editable
                                 && classes.contains("editable")
                                 || text.contains("fn main")
                                 || text.contains("quick_main!")
@@ -628,7 +866,7 @@ fn add_playpen_pre(html: &str, playpen_config: &Playpen) -> String {
                                 let (attrs, code) = partition_source(code);
 
                                 format!(
-                                    "\n# #![allow(unused_variables)]\n{}#fn main() {{\n{}#}}",
+                                    "\n# #![allow(unused)]\n{}#fn main() {{\n{}#}}",
                                     attrs, code
                                 )
                                 .into()
@@ -690,10 +928,10 @@ fn partition_source(s: &str) -> (String, String) {
         if !header || after_header {
             after_header = true;
             after.push_str(line);
-            after.push_str("\n");
+            after.push('\n');
         } else {
             before.push_str(line);
-            before.push_str("\n");
+            before.push('\n');
         }
     }
 
@@ -701,11 +939,14 @@ fn partition_source(s: &str) -> (String, String) {
 }
 
 struct RenderItemContext<'a> {
-    handlebars: &'a Handlebars,
+    handlebars: &'a Handlebars<'a>,
     destination: PathBuf,
     data: serde_json::Map<String, serde_json::Value>,
     is_index: bool,
+    book_config: BookConfig,
     html_config: HtmlConfig,
+    edition: Option<RustEdition>,
+    chapter_titles: &'a HashMap<PathBuf, String>,
 }
 
 #[cfg(test)]
@@ -717,27 +958,27 @@ mod tests {
         let inputs = vec![
             (
                 "blah blah <h1>Foo</h1>",
-                r##"blah blah <h1><a class="header" href="#foo" id="foo">Foo</a></h1>"##,
+                r##"blah blah <h1 id="foo"><a class="header" href="#foo">Foo</a></h1>"##,
             ),
             (
                 "<h1>Foo</h1>",
-                r##"<h1><a class="header" href="#foo" id="foo">Foo</a></h1>"##,
+                r##"<h1 id="foo"><a class="header" href="#foo">Foo</a></h1>"##,
             ),
             (
                 "<h3>Foo^bar</h3>",
-                r##"<h3><a class="header" href="#foobar" id="foobar">Foo^bar</a></h3>"##,
+                r##"<h3 id="foobar"><a class="header" href="#foobar">Foo^bar</a></h3>"##,
             ),
             (
                 "<h4></h4>",
-                r##"<h4><a class="header" href="#" id=""></a></h4>"##,
+                r##"<h4 id=""><a class="header" href="#"></a></h4>"##,
             ),
             (
                 "<h4><em>Hï</em></h4>",
-                r##"<h4><a class="header" href="#hï" id="hï"><em>Hï</em></a></h4>"##,
+                r##"<h4 id="hï"><a class="header" href="#hï"><em>Hï</em></a></h4>"##,
             ),
             (
                 "<h1>Foo</h1><h3>Foo</h3>",
-                r##"<h1><a class="header" href="#foo" id="foo">Foo</a></h1><h3><a class="header" href="#foo-1" id="foo-1">Foo</a></h3>"##,
+                r##"<h1 id="foo"><a class="header" href="#foo">Foo</a></h1><h3 id="foo-1"><a class="header" href="#foo-1">Foo</a></h3>"##,
             ),
         ];
 
@@ -748,30 +989,103 @@ mod tests {
     }
 
     #[test]
-    fn add_playpen() {
+    fn add_playground() {
         let inputs = [
           ("<code class=\"language-rust\">x()</code>",
-           "<pre class=\"playpen\"><code class=\"language-rust\">\n<span class=\"boring\">#![allow(unused_variables)]\n</span><span class=\"boring\">fn main() {\n</span>x()\n<span class=\"boring\">}\n</span></code></pre>"),
+           "<pre class=\"playground\"><code class=\"language-rust\">\n<span class=\"boring\">#![allow(unused)]\n</span><span class=\"boring\">fn main() {\n</span>x()\n<span class=\"boring\">}\n</span></code></pre>"),
           ("<code class=\"language-rust\">fn main() {}</code>",
-           "<pre class=\"playpen\"><code class=\"language-rust\">fn main() {}\n</code></pre>"),
+           "<pre class=\"playground\"><code class=\"language-rust\">fn main() {}\n</code></pre>"),
           ("<code class=\"language-rust editable\">let s = \"foo\n # bar\n\";</code>",
-           "<pre class=\"playpen\"><code class=\"language-rust editable\">let s = \"foo\n<span class=\"boring\"> bar\n</span>\";\n</code></pre>"),
+           "<pre class=\"playground\"><code class=\"language-rust editable\">let s = \"foo\n<span class=\"boring\"> bar\n</span>\";\n</code></pre>"),
           ("<code class=\"language-rust editable\">let s = \"foo\n ## bar\n\";</code>",
-           "<pre class=\"playpen\"><code class=\"language-rust editable\">let s = \"foo\n # bar\n\";\n</code></pre>"),
+           "<pre class=\"playground\"><code class=\"language-rust editable\">let s = \"foo\n # bar\n\";\n</code></pre>"),
           ("<code class=\"language-rust editable\">let s = \"foo\n # bar\n#\n\";</code>",
-           "<pre class=\"playpen\"><code class=\"language-rust editable\">let s = \"foo\n<span class=\"boring\"> bar\n</span><span class=\"boring\">\n</span>\";\n</code></pre>"),
+           "<pre class=\"playground\"><code class=\"language-rust editable\">let s = \"foo\n<span class=\"boring\"> bar\n</span><span class=\"boring\">\n</span>\";\n</code></pre>"),
           ("<code class=\"language-rust ignore\">let s = \"foo\n # bar\n\";</code>",
            "<code class=\"language-rust ignore\">let s = \"foo\n<span class=\"boring\"> bar\n</span>\";\n</code>"),
           ("<code class=\"language-rust editable\">#![no_std]\nlet s = \"foo\";\n #[some_attr]</code>",
-           "<pre class=\"playpen\"><code class=\"language-rust editable\">#![no_std]\nlet s = \"foo\";\n #[some_attr]\n</code></pre>"),
+           "<pre class=\"playground\"><code class=\"language-rust editable\">#![no_std]\nlet s = \"foo\";\n #[some_attr]\n</code></pre>"),
         ];
         for (src, should_be) in &inputs {
-            let got = add_playpen_pre(
+            let got = add_playground_pre(
                 src,
-                &Playpen {
+                &Playground {
                     editable: true,
-                    ..Playpen::default()
+                    ..Playground::default()
                 },
+                None,
+            );
+            assert_eq!(&*got, *should_be);
+        }
+    }
+    #[test]
+    fn add_playground_edition2015() {
+        let inputs = [
+          ("<code class=\"language-rust\">x()</code>",
+           "<pre class=\"playground\"><code class=\"language-rust edition2015\">\n<span class=\"boring\">#![allow(unused)]\n</span><span class=\"boring\">fn main() {\n</span>x()\n<span class=\"boring\">}\n</span></code></pre>"),
+          ("<code class=\"language-rust\">fn main() {}</code>",
+           "<pre class=\"playground\"><code class=\"language-rust edition2015\">fn main() {}\n</code></pre>"),
+          ("<code class=\"language-rust edition2015\">fn main() {}</code>",
+           "<pre class=\"playground\"><code class=\"language-rust edition2015\">fn main() {}\n</code></pre>"),
+          ("<code class=\"language-rust edition2018\">fn main() {}</code>",
+           "<pre class=\"playground\"><code class=\"language-rust edition2018\">fn main() {}\n</code></pre>"),
+        ];
+        for (src, should_be) in &inputs {
+            let got = add_playground_pre(
+                src,
+                &Playground {
+                    editable: true,
+                    ..Playground::default()
+                },
+                Some(RustEdition::E2015),
+            );
+            assert_eq!(&*got, *should_be);
+        }
+    }
+    #[test]
+    fn add_playground_edition2018() {
+        let inputs = [
+          ("<code class=\"language-rust\">x()</code>",
+           "<pre class=\"playground\"><code class=\"language-rust edition2018\">\n<span class=\"boring\">#![allow(unused)]\n</span><span class=\"boring\">fn main() {\n</span>x()\n<span class=\"boring\">}\n</span></code></pre>"),
+          ("<code class=\"language-rust\">fn main() {}</code>",
+           "<pre class=\"playground\"><code class=\"language-rust edition2018\">fn main() {}\n</code></pre>"),
+          ("<code class=\"language-rust edition2015\">fn main() {}</code>",
+           "<pre class=\"playground\"><code class=\"language-rust edition2015\">fn main() {}\n</code></pre>"),
+          ("<code class=\"language-rust edition2018\">fn main() {}</code>",
+           "<pre class=\"playground\"><code class=\"language-rust edition2018\">fn main() {}\n</code></pre>"),
+        ];
+        for (src, should_be) in &inputs {
+            let got = add_playground_pre(
+                src,
+                &Playground {
+                    editable: true,
+                    ..Playground::default()
+                },
+                Some(RustEdition::E2018),
+            );
+            assert_eq!(&*got, *should_be);
+        }
+    }
+    #[test]
+    fn add_playground_edition2021() {
+        let inputs = [
+            ("<code class=\"language-rust\">x()</code>",
+             "<pre class=\"playground\"><code class=\"language-rust edition2021\">\n<span class=\"boring\">#![allow(unused)]\n</span><span class=\"boring\">fn main() {\n</span>x()\n<span class=\"boring\">}\n</span></code></pre>"),
+            ("<code class=\"language-rust\">fn main() {}</code>",
+             "<pre class=\"playground\"><code class=\"language-rust edition2021\">fn main() {}\n</code></pre>"),
+            ("<code class=\"language-rust edition2015\">fn main() {}</code>",
+             "<pre class=\"playground\"><code class=\"language-rust edition2015\">fn main() {}\n</code></pre>"),
+            ("<code class=\"language-rust edition2018\">fn main() {}</code>",
+             "<pre class=\"playground\"><code class=\"language-rust edition2018\">fn main() {}\n</code></pre>"),
+        ];
+        for (src, should_be) in &inputs {
+            let got = add_playground_pre(
+                src,
+                &Playground {
+                    editable: true,
+                    ..Playground::default()
+                },
+                Some(RustEdition::E2021),
             );
             assert_eq!(&*got, *should_be);
         }

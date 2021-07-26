@@ -71,14 +71,18 @@ fn render_item(
     item: &BookItem,
 ) -> Result<()> {
     let chapter = match *item {
-        BookItem::Chapter(ref ch) => ch,
+        BookItem::Chapter(ref ch) if !ch.is_draft_chapter() => ch,
         _ => return Ok(()),
     };
 
-    let filepath = Path::new(&chapter.path).with_extension("html");
+    let chapter_path = chapter
+        .path
+        .as_ref()
+        .expect("Checked that path exists above");
+    let filepath = Path::new(&chapter_path).with_extension("html");
     let filepath = filepath
         .to_str()
-        .chain_err(|| "Could not convert HTML path to str")?;
+        .with_context(|| "Could not convert HTML path to str")?;
     let anchor_base = utils::fs::normalize_path(filepath);
 
     let mut p = utils::new_cmark_parser(&chapter.content).peekable();
@@ -90,6 +94,8 @@ fn render_item(
     let mut body = String::new();
     let mut breadcrumbs = chapter.parent_names.clone();
     let mut footnote_numbers = HashMap::new();
+
+    breadcrumbs.push(chapter.name.clone());
 
     while let Some(event) = p.next() {
         match event {
@@ -135,7 +141,7 @@ fn render_item(
                 body.push_str(&clean_html(&html_block));
             }
             Event::Start(_) | Event::End(_) | Event::Rule | Event::SoftBreak | Event::HardBreak => {
-                // Insert spaces where HTML output would usually seperate text
+                // Insert spaces where HTML output would usually separate text
                 // to ensure words don't get merged together
                 if in_heading {
                     heading.push(' ');

@@ -18,14 +18,16 @@ mod html_handlebars;
 mod markdown_renderer;
 
 use shlex::Shlex;
+use std::collections::HashMap;
 use std::fs;
-use std::io::{self, Read};
-use std::path::PathBuf;
+use std::io::{self, ErrorKind, Read};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::book::Book;
 use crate::config::Config;
 use crate::errors::*;
+use toml::Value;
 
 /// An arbitrary `mdbook` backend.
 ///
@@ -33,12 +35,9 @@ use crate::errors::*;
 /// provide your own renderer, there are two main renderer implementations that
 /// 99% of users will ever use:
 ///
-/// - [HtmlHandlebars] - the built-in HTML renderer
-/// - [CmdRenderer] - a generic renderer which shells out to a program to do the
+/// - [`HtmlHandlebars`] - the built-in HTML renderer
+/// - [`CmdRenderer`] - a generic renderer which shells out to a program to do the
 ///   actual rendering
-///
-/// [HtmlHandlebars]: struct.HtmlHandlebars.html
-/// [CmdRenderer]: struct.CmdRenderer.html
 pub trait Renderer {
     /// The `Renderer`'s name.
     fn name(&self) -> &str;
@@ -66,6 +65,8 @@ pub struct RenderContext {
     /// guaranteed to be empty or even exist.
     pub destination: PathBuf,
     #[serde(skip)]
+    pub(crate) chapter_titles: HashMap<PathBuf, String>,
+    #[serde(skip)]
     __non_exhaustive: (),
 }
 
@@ -82,6 +83,7 @@ impl RenderContext {
             version: crate::MDBOOK_VERSION.to_string(),
             root: root.into(),
             destination: destination.into(),
+            chapter_titles: HashMap::new(),
             __non_exhaustive: (),
         }
     }
@@ -93,7 +95,7 @@ impl RenderContext {
 
     /// Load a `RenderContext` from its JSON representation.
     pub fn from_json<R: Read>(reader: R) -> Result<RenderContext> {
-        serde_json::from_reader(reader).chain_err(|| "Unable to deserialize the `RenderContext`")
+        serde_json::from_reader(reader).with_context(|| "Unable to deserialize the `RenderContext`")
     }
 }
 
@@ -132,20 +134,84 @@ impl CmdRenderer {
         CmdRenderer { name, cmd }
     }
 
-    fn compose_command(&self) -> Result<Command> {
+    fn compose_command(&self, root: &Path, destination: &Path) -> Result<Command> {
         let mut words = Shlex::new(&self.cmd);
-        let executable = match words.next() {
-            Some(e) => e,
+        let exe = match words.next() {
+            Some(e) => PathBuf::from(e),
             None => bail!("Command string was empty"),
         };
 
-        let mut cmd = Command::new(executable);
+        let exe = if exe.components().count() == 1 {
+            // Search PATH for the executable.
+            exe
+        } else {
+            // Relative paths are preferred to be relative to the book root.
+            let abs_exe = root.join(&exe);
+            if abs_exe.exists() {
+                abs_exe
+            } else {
+                // Historically paths were relative to the destination, but
+                // this is not the preferred way.
+                let legacy_path = destination.join(&exe);
+                if legacy_path.exists() {
+                    warn!(
+                        "Renderer command `{}` uses a path relative to the \
+                        renderer output directory `{}`. This was previously \
+                        accepted, but has been deprecated. Relative executable \
+                        paths should be relative to the book root.",
+                        exe.display(),
+                        destination.display()
+                    );
+                    legacy_path
+                } else {
+                    // Let this bubble through to later be handled by
+                    // handle_render_command_error.
+                    abs_exe
+                }
+            }
+        };
+
+        let mut cmd = Command::new(exe);
 
         for arg in words {
             cmd.arg(arg);
         }
 
         Ok(cmd)
+    }
+}
+
+impl CmdRenderer {
+    fn handle_render_command_error(&self, ctx: &RenderContext, error: io::Error) -> Result<()> {
+        if let ErrorKind::NotFound = error.kind() {
+            // Look for "output.{self.name}.optional".
+            // If it exists and is true, treat this as a warning.
+            // Otherwise, fail the build.
+
+            let optional_key = format!("output.{}.optional", self.name);
+
+            let is_optional = match ctx.config.get(&optional_key) {
+                Some(Value::Boolean(value)) => *value,
+                _ => false,
+            };
+
+            if is_optional {
+                warn!(
+                    "The command `{}` for backend `{}` was not found, \
+                    but was marked as optional.",
+                    self.cmd, self.name
+                );
+                return Ok(());
+            } else {
+                error!(
+                    "The command `{0}` wasn't found, is the \"{1}\" backend installed? \
+                    If you want to ignore this error when the \"{1}\" backend is not installed, \
+                    set `optional = true` in the `[output.{1}]` section of the book.toml configuration file.",
+                    self.cmd, self.name
+                );
+            }
+        }
+        Err(error).with_context(|| "Unable to start the backend")?
     }
 }
 
@@ -160,7 +226,7 @@ impl Renderer for CmdRenderer {
         let _ = fs::create_dir_all(&ctx.destination);
 
         let mut child = match self
-            .compose_command()?
+            .compose_command(&ctx.root, &ctx.destination)?
             .stdin(Stdio::piped())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
@@ -168,34 +234,22 @@ impl Renderer for CmdRenderer {
             .spawn()
         {
             Ok(c) => c,
-            Err(ref e) if e.kind() == io::ErrorKind::NotFound => {
-                warn!(
-                    "The command wasn't found, is the \"{}\" backend installed?",
-                    self.name
-                );
-                warn!("\tCommand: {}", self.cmd);
-                return Ok(());
-            }
-            Err(e) => {
-                return Err(e).chain_err(|| "Unable to start the backend")?;
-            }
+            Err(e) => return self.handle_render_command_error(ctx, e),
         };
 
-        {
-            let mut stdin = child.stdin.take().expect("Child has stdin");
-            if let Err(e) = serde_json::to_writer(&mut stdin, &ctx) {
-                // Looks like the backend hung up before we could finish
-                // sending it the render context. Log the error and keep going
-                warn!("Error writing the RenderContext to the backend, {}", e);
-            }
-
-            // explicitly close the `stdin` file handle
-            drop(stdin);
+        let mut stdin = child.stdin.take().expect("Child has stdin");
+        if let Err(e) = serde_json::to_writer(&mut stdin, &ctx) {
+            // Looks like the backend hung up before we could finish
+            // sending it the render context. Log the error and keep going
+            warn!("Error writing the RenderContext to the backend, {}", e);
         }
+
+        // explicitly close the `stdin` file handle
+        drop(stdin);
 
         let status = child
             .wait()
-            .chain_err(|| "Error waiting for the backend to complete")?;
+            .with_context(|| "Error waiting for the backend to complete")?;
 
         trace!("{} exited with output: {:?}", self.cmd, status);
 
