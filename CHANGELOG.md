@@ -1,5 +1,13 @@
 # Changelog
 
+## mdBook 0.4.18
+[981b79b...ae275ad](https://github.com/rust-lang/mdBook/compare/981b79b...ae275ad)
+
+### Fixed
+- Fixed rendering of SUMMARY links that contain markdown escapes or other
+  markdown elements.
+  [#1785](https://github.com/rust-lang/mdBook/pull/1785)
+
 ## mdBook 0.4.17
 [a5fddfa...981b79b](https://github.com/rust-lang/mdBook/compare/a5fddfa...981b79b)
 
@@ -19,7 +27,7 @@
   [#1546](https://github.com/rust-lang/mdBook/pull/1546)
 
 ### Changed
-- The `cargo serve` live reload websocket now uses the protocol, host, and
+- The `mdbook serve` live reload websocket now uses the protocol, host, and
   port of the current page, allowing access through a proxy.
   [#1771](https://github.com/rust-lang/mdBook/pull/1771)
 - The 404 not-found page now includes the books title in the HTML title tag.
