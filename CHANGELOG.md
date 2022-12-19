@@ -1,5 +1,34 @@
 # Changelog
 
+## mdBook 0.4.25
+[e14d381...1ba74a3](https://github.com/rust-lang/mdBook/compare/e14d381...1ba74a3)
+
+### Fixed
+- Fixed a regression where `mdbook test -L deps path-to-book` would not work.
+  [#1959](https://github.com/rust-lang/mdBook/pull/1959)
+
+## mdBook 0.4.24
+[eb77083...8767ebf](https://github.com/rust-lang/mdBook/compare/eb77083...8767ebf)
+
+### Fixed
+- The precompiled linux-gnu mdbook binary available on [GitHub Releases](https://github.com/rust-lang/mdBook/releases) inadvertently switched to a newer version of glibc. This release goes back to an older version that should be more compatible on older versions of Linux.
+  [#1955](https://github.com/rust-lang/mdBook/pull/1955)
+
+## mdBook 0.4.23
+[678b469...68a75da](https://github.com/rust-lang/mdBook/compare/678b469...68a75da)
+
+### Changed
+- Updated all dependencies
+  [#1951](https://github.com/rust-lang/mdBook/pull/1951)
+  [#1952](https://github.com/rust-lang/mdBook/pull/1952)
+  [#1844](https://github.com/rust-lang/mdBook/pull/1844)
+- Updated minimum Rust version to 1.60.
+  [#1951](https://github.com/rust-lang/mdBook/pull/1951)
+
+### Fixed
+- Fixed a regression where playground code was missing hidden lines, preventing it from compiling correctly.
+  [#1950](https://github.com/rust-lang/mdBook/pull/1950)
+
 ## mdBook 0.4.22
 [40c06f5...4844f72](https://github.com/rust-lang/mdBook/compare/40c06f5...4844f72)
 
