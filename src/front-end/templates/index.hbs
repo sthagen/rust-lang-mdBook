@@ -181,7 +181,7 @@
                         </a>
                         {{/if}}
                         {{#if git_repository_edit_url}}
-                        <a href="{{git_repository_edit_url}}" title="Suggest an edit" aria-label="Suggest an edit">
+                        <a href="{{git_repository_edit_url}}" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
                             <i id="git-edit-button" class="fa fa-edit"></i>
                         </a>
                         {{/if}}
@@ -345,6 +345,21 @@
         });
         </script>
         {{/if}}
+        {{/if}}
+
+        {{#if fragment_map}}
+        <script>
+            document.addEventListener('DOMContentLoaded', function() {
+                const fragmentMap =
+                    {{{fragment_map}}}
+                ;
+                const target = fragmentMap[window.location.hash];
+                if (target) {
+                    let url = new URL(target, window.location.href);
+                    window.location.replace(url.href);
+                }
+            });
+        </script>
         {{/if}}
 
     </div>
