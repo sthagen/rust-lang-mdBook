@@ -71,6 +71,7 @@ fn handle_supports(pre: &dyn Preprocessor, sub_args: &ArgMatches) -> ! {
 
 /// The actual implementation of the `Nop` preprocessor. This would usually go
 /// in your main `lib.rs` file.
+#[allow(unreachable_pub, reason = "wouldn't be a problem in a proper lib.rs")]
 mod nop_lib {
     use super::*;
 
@@ -91,10 +92,13 @@ mod nop_lib {
         fn run(&self, ctx: &PreprocessorContext, book: Book) -> Result<Book> {
             // In testing we want to tell the preprocessor to blow up by setting a
             // particular config value
-            if let Some(nop_cfg) = ctx.config.get_preprocessor(self.name()) {
-                if nop_cfg.contains_key("blow-up") {
-                    anyhow::bail!("Boom!!1!");
-                }
+            match ctx
+                .config
+                .get::<bool>("preprocessor.nop-preprocessor.blow-up")
+            {
+                Ok(Some(true)) => anyhow::bail!("Boom!!1!"),
+                Ok(_) => {}
+                Err(e) => anyhow::bail!("expect bool for blow-up: {e}"),
             }
 
             // we *are* a no-op preprocessor after all
