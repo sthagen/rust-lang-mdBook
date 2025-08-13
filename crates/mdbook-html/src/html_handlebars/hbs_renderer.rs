@@ -57,10 +57,10 @@ impl HtmlHandlebars {
                 .insert("git_repository_edit_url".to_owned(), json!(edit_url));
         }
 
-        let content = render_markdown(&ch.content, ctx.html_config.smart_punctuation());
+        let content = render_markdown(&ch.content, ctx.html_config.smart_punctuation);
 
         let fixed_content =
-            render_markdown_with_path(&ch.content, ctx.html_config.smart_punctuation(), Some(path));
+            render_markdown_with_path(&ch.content, ctx.html_config.smart_punctuation, Some(path));
         if !ctx.is_index && ctx.html_config.print.page_break {
             // Add page break between chapters
             // See https://developer.mozilla.org/en-US/docs/Web/CSS/break-before and https://developer.mozilla.org/en-US/docs/Web/CSS/page-break-before
@@ -175,7 +175,7 @@ impl HtmlHandlebars {
                     .to_string()
             }
         };
-        let html_content_404 = render_markdown(&content_404, html_config.smart_punctuation());
+        let html_content_404 = render_markdown(&content_404, html_config.smart_punctuation);
 
         let mut data_404 = data.clone();
         let base_url = if let Some(site_url) = &html_config.site_url {
@@ -555,11 +555,6 @@ fn make_data(
 
     if html_config.mathjax_support {
         data.insert("mathjax_support".to_owned(), json!(true));
-    }
-
-    // This `matches!` checks for a non-empty file.
-    if html_config.copy_fonts || matches!(theme.fonts_css.as_deref(), Some([_, ..])) {
-        data.insert("copy_fonts".to_owned(), json!(true));
     }
 
     // Add check to see if there is an additional style

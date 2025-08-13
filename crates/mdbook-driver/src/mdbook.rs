@@ -14,7 +14,6 @@ use mdbook_preprocessor::{Preprocessor, PreprocessorContext};
 use mdbook_renderer::{RenderContext, Renderer};
 use mdbook_summary::Summary;
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -45,16 +44,6 @@ impl MDBook {
         let book_root = book_root.into();
         let config_location = book_root.join("book.toml");
 
-        // the book.json file is no longer used, so we should emit a warning to
-        // let people know to migrate to book.toml
-        if book_root.join("book.json").exists() {
-            warn!("It appears you are still using book.json for configuration.");
-            warn!("This format is no longer used, so you should migrate to the");
-            warn!("book.toml format.");
-            warn!("Check the user guide for migration information:");
-            warn!("\thttps://rust-lang.github.io/mdBook/format/config.html");
-        }
-
         let mut config = if config_location.exists() {
             debug!("Loading config from {}", config_location.display());
             Config::from_disk(&config_location)?
@@ -63,16 +52,6 @@ impl MDBook {
         };
 
         config.update_from_env();
-
-        if let Some(html_config) = config.html_config() {
-            if html_config.curly_quotes {
-                warn!(
-                    "The output.html.curly-quotes field has been renamed to \
-                     output.html.smart-punctuation.\n\
-                     Use the new name in book.toml to remove this warning."
-                );
-            }
-        }
 
         if log_enabled!(log::Level::Trace) {
             for line in format!("Config: {config:#?}").lines() {
@@ -423,22 +402,17 @@ struct OutputConfig {
 fn determine_renderers(config: &Config) -> Result<Vec<Box<dyn Renderer>>> {
     let mut renderers = Vec::new();
 
-    match config.get::<HashMap<String, OutputConfig>>("output") {
-        Ok(Some(output_table)) => {
-            renderers.extend(output_table.into_iter().map(|(key, table)| {
-                if key == "html" {
-                    Box::new(HtmlHandlebars::new()) as Box<dyn Renderer>
-                } else if key == "markdown" {
-                    Box::new(MarkdownRenderer::new()) as Box<dyn Renderer>
-                } else {
-                    let command = table.command.unwrap_or_else(|| format!("mdbook-{key}"));
-                    Box::new(CmdRenderer::new(key, command))
-                }
-            }));
+    let outputs = config.outputs::<OutputConfig>()?;
+    renderers.extend(outputs.into_iter().map(|(key, table)| {
+        if key == "html" {
+            Box::new(HtmlHandlebars::new()) as Box<dyn Renderer>
+        } else if key == "markdown" {
+            Box::new(MarkdownRenderer::new()) as Box<dyn Renderer>
+        } else {
+            let command = table.command.unwrap_or_else(|| format!("mdbook-{key}"));
+            Box::new(CmdRenderer::new(key, command))
         }
-        Ok(None) => {}
-        Err(e) => bail!("failed to get output table config: {e}"),
-    }
+    }));
 
     // if we couldn't find anything, add the HTML renderer as a default
     if renderers.is_empty() {
@@ -477,12 +451,7 @@ fn determine_preprocessors(config: &Config) -> Result<Vec<Box<dyn Preprocessor>>
         }
     }
 
-    let preprocessor_table = match config.get::<HashMap<String, PreprocessorConfig>>("preprocessor")
-    {
-        Ok(Some(preprocessor_table)) => preprocessor_table,
-        Ok(None) => HashMap::new(),
-        Err(e) => bail!("failed to get preprocessor table config: {e}"),
-    };
+    let preprocessor_table = config.preprocessors::<PreprocessorConfig>()?;
 
     for (name, table) in preprocessor_table.iter() {
         preprocessor_names.insert(name.to_string());
