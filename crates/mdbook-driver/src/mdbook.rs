@@ -70,7 +70,7 @@ impl MDBook {
         let book = load_book(src_dir, &config.build)?;
 
         let renderers = determine_renderers(&config)?;
-        let preprocessors = determine_preprocessors(&config)?;
+        let preprocessors = determine_preprocessors(&config, &root)?;
 
         Ok(MDBook {
             root,
@@ -93,7 +93,7 @@ impl MDBook {
         let book = load_book_from_disk(&summary, src_dir)?;
 
         let renderers = determine_renderers(&config)?;
-        let preprocessors = determine_preprocessors(&config)?;
+        let preprocessors = determine_preprocessors(&config, &root)?;
 
         Ok(MDBook {
             root,
@@ -258,7 +258,7 @@ impl MDBook {
 
         // Index Preprocessor is disabled so that chapter paths
         // continue to point to the actual markdown files.
-        self.preprocessors = determine_preprocessors(&self.config)?
+        self.preprocessors = determine_preprocessors(&self.config, &self.root)?
             .into_iter()
             .filter(|pre| pre.name() != IndexPreprocessor::NAME)
             .collect();
@@ -437,10 +437,12 @@ struct PreprocessorConfig {
     before: Vec<String>,
     #[serde(default)]
     after: Vec<String>,
+    #[serde(default)]
+    optional: bool,
 }
 
 /// Look at the `MDBook` and try to figure out what preprocessors to run.
-fn determine_preprocessors(config: &Config) -> Result<Vec<Box<dyn Preprocessor>>> {
+fn determine_preprocessors(config: &Config, root: &Path) -> Result<Vec<Box<dyn Preprocessor>>> {
     // Collect the names of all preprocessors intended to be run, and the order
     // in which they should be run.
     let mut preprocessor_names = TopologicalSort::<String>::new();
@@ -513,7 +515,12 @@ fn determine_preprocessors(config: &Config) -> Result<Vec<Box<dyn Preprocessor>>
                         .command
                         .to_owned()
                         .unwrap_or_else(|| format!("mdbook-{name}"));
-                    Box::new(CmdPreprocessor::new(name, command))
+                    Box::new(CmdPreprocessor::new(
+                        name,
+                        command,
+                        root.to_owned(),
+                        table.optional,
+                    ))
                 }
             };
             preprocessors.push(preprocessor);
@@ -542,7 +549,7 @@ fn preprocessor_should_run(
 ) -> Result<bool> {
     // default preprocessors should be run by default (if supported)
     if cfg.build.use_default_preprocessors && is_default_preprocessor(preprocessor) {
-        return Ok(preprocessor.supports_renderer(renderer.name()));
+        return preprocessor.supports_renderer(renderer.name());
     }
 
     let key = format!("preprocessor.{}.renderers", preprocessor.name());
@@ -552,7 +559,7 @@ fn preprocessor_should_run(
         Ok(Some(explicit_renderers)) => {
             Ok(explicit_renderers.iter().any(|name| name == renderer_name))
         }
-        Ok(None) => Ok(preprocessor.supports_renderer(renderer_name)),
+        Ok(None) => preprocessor.supports_renderer(renderer_name),
         Err(e) => bail!("failed to get `{key}`: {e}"),
     }
 }

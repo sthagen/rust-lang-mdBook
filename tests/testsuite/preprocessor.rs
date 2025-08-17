@@ -75,6 +75,8 @@ fn example() -> CmdPreprocessor {
     CmdPreprocessor::new(
         "nop-preprocessor".to_string(),
         "cargo run --quiet --example nop-preprocessor --".to_string(),
+        std::env::current_dir().unwrap(),
+        false,
     )
 }
 
@@ -82,7 +84,7 @@ fn example() -> CmdPreprocessor {
 fn example_supports_whatever() {
     let cmd = example();
 
-    let got = cmd.supports_renderer("whatever");
+    let got = cmd.supports_renderer("whatever").unwrap();
 
     assert_eq!(got, true);
 }
@@ -91,7 +93,90 @@ fn example_supports_whatever() {
 fn example_doesnt_support_not_supported() {
     let cmd = example();
 
-    let got = cmd.supports_renderer("not-supported");
+    let got = cmd.supports_renderer("not-supported").unwrap();
 
     assert_eq!(got, false);
+}
+
+// Checks the behavior of a relative path to a preprocessor.
+#[test]
+fn relative_command_path() {
+    let mut test = BookTest::init(|_| {});
+    test.rust_program(
+        "preprocessors/my-preprocessor",
+        r#"
+        fn main() {
+            let mut args = std::env::args().skip(1);
+            if args.next().as_deref() == Some("supports") {
+                std::fs::write("support-check", args.next().unwrap()).unwrap();
+                return;
+            }
+            use std::io::Read;
+            let mut s = String::new();
+            std::io::stdin().read_to_string(&mut s).unwrap();
+            std::fs::write("preprocessor-ran", "test").unwrap();
+            println!("{{\"sections\": []}}");
+        }
+        "#,
+    )
+    .change_file(
+        "book.toml",
+        "[preprocessor.my-preprocessor]\n\
+         command = 'preprocessors/my-preprocessor'\n",
+    )
+    .run("build", |cmd| {
+        cmd.expect_stdout(str![""]).expect_stderr(str![[r#"
+[TIMESTAMP] [INFO] (mdbook_driver::mdbook): Book building has started
+[TIMESTAMP] [INFO] (mdbook_driver::mdbook): Running the html backend
+[TIMESTAMP] [INFO] (mdbook_html::html_handlebars::hbs_renderer): HTML book written to `[ROOT]/book`
+
+"#]]);
+    })
+    .check_file("support-check", "html")
+    .check_file("preprocessor-ran", "test")
+    // Try again, but outside of the book root to check relative path behavior.
+    .rm_r("support-check")
+    .rm_r("preprocessor-ran")
+    .run("build ..", |cmd| {
+        cmd.current_dir(cmd.dir.join("src"))
+            .expect_stdout(str![""])
+            .expect_stderr(str![[r#"
+[TIMESTAMP] [INFO] (mdbook_driver::mdbook): Book building has started
+[TIMESTAMP] [INFO] (mdbook_driver::mdbook): Running the html backend
+[TIMESTAMP] [INFO] (mdbook_html::html_handlebars::hbs_renderer): HTML book written to `[ROOT]/src/../book`
+
+"#]]);
+    })
+    .check_file("support-check", "html")
+    .check_file("preprocessor-ran", "test");
+}
+
+// Preprocessor command is missing.
+#[test]
+fn missing_preprocessor() {
+    BookTest::from_dir("preprocessor/missing_preprocessor").run("build", |cmd| {
+        cmd.expect_failure()
+            .expect_stdout(str![[""]])
+            .expect_stderr(str![[r#"
+[TIMESTAMP] [INFO] (mdbook_driver::mdbook): Book building has started
+[TIMESTAMP] [ERROR] (mdbook_driver): The command `trduyvbhijnorgevfuhn` wasn't found, is the `missing` preprocessor installed? If you want to ignore this error when the `missing` preprocessor is not installed, set `optional = true` in the `[preprocessor.missing]` section of the book.toml configuration file.
+[TIMESTAMP] [ERROR] (mdbook_core::utils): Error: Unable to run the preprocessor `missing`
+[TIMESTAMP] [ERROR] (mdbook_core::utils): [TAB]Caused By: [NOT_FOUND]
+
+"#]]);
+    });
+}
+
+// Optional missing is not an error.
+#[test]
+fn missing_optional_not_fatal() {
+    BookTest::from_dir("preprocessor/missing_optional_not_fatal").run("build", |cmd| {
+        cmd.expect_stdout(str![[""]]).expect_stderr(str![[r#"
+[TIMESTAMP] [INFO] (mdbook_driver::mdbook): Book building has started
+[TIMESTAMP] [WARN] (mdbook_driver): The command `trduyvbhijnorgevfuhn` for preprocessor `missing` was not found, but is marked as optional.
+[TIMESTAMP] [INFO] (mdbook_driver::mdbook): Running the html backend
+[TIMESTAMP] [INFO] (mdbook_html::html_handlebars::hbs_renderer): HTML book written to `[ROOT]/book`
+
+"#]]);
+    });
 }
