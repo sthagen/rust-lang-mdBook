@@ -47,12 +47,10 @@ fn config_defaults_to_link_and_index_preprocessor_if_not_set() {
     // make sure we haven't got anything in the `preprocessor` table
     assert!(cfg.preprocessors::<toml::Value>().unwrap().is_empty());
 
-    let got = determine_preprocessors(&cfg, Path::new(""));
+    let got = determine_preprocessors(&cfg, Path::new("")).unwrap();
 
-    assert!(got.is_ok());
-    assert_eq!(got.as_ref().unwrap().len(), 2);
-    assert_eq!(got.as_ref().unwrap()[0].name(), "index");
-    assert_eq!(got.as_ref().unwrap()[1].name(), "links");
+    let names: Vec<_> = got.values().map(|p| p.name()).collect();
+    assert_eq!(names, ["index", "links"]);
 }
 
 #[test]
@@ -85,7 +83,7 @@ fn can_determine_third_party_preprocessors() {
 
     let got = determine_preprocessors(&cfg, Path::new("")).unwrap();
 
-    assert!(got.into_iter().any(|p| p.name() == "random"));
+    assert!(got.contains_key("random"));
 }
 
 #[test]
@@ -143,19 +141,12 @@ fn preprocessor_order_is_honored() {
     let cfg = Config::from_str(cfg_str).unwrap();
 
     let preprocessors = determine_preprocessors(&cfg, Path::new("")).unwrap();
-    let index = |name| {
-        preprocessors
-            .iter()
-            .enumerate()
-            .find(|(_, preprocessor)| preprocessor.name() == name)
-            .unwrap()
-            .0
-    };
+    let index = |name| preprocessors.get_index_of(name).unwrap();
     let assert_before = |before, after| {
         if index(before) >= index(after) {
             eprintln!("Preprocessor order:");
-            for preprocessor in &preprocessors {
-                eprintln!("  {}", preprocessor.name());
+            for preprocessor in preprocessors.keys() {
+                eprintln!("  {}", preprocessor);
             }
             panic!("{before} should come before {after}");
         }
@@ -193,11 +184,8 @@ fn dependencies_dont_register_undefined_preprocessors() {
 
     let preprocessors = determine_preprocessors(&cfg, Path::new("")).unwrap();
 
-    assert!(
-        !preprocessors
-            .iter()
-            .any(|preprocessor| preprocessor.name() == "random")
-    );
+    // Does not contain "random"
+    assert_eq!(preprocessors.keys().collect::<Vec<_>>(), ["index", "links"]);
 }
 
 #[test]
@@ -214,11 +202,8 @@ fn dependencies_dont_register_builtin_preprocessors_if_disabled() {
 
     let preprocessors = determine_preprocessors(&cfg, Path::new("")).unwrap();
 
-    assert!(
-        !preprocessors
-            .iter()
-            .any(|preprocessor| preprocessor.name() == "links")
-    );
+    // Does not contain "links"
+    assert_eq!(preprocessors.keys().collect::<Vec<_>>(), ["random"]);
 }
 
 #[test]
@@ -264,4 +249,36 @@ fn preprocessor_should_run_falls_back_to_supports_renderer_method() {
     let should_be = false;
     let got = preprocessor_should_run(&BoolPreprocessor(should_be), &html, &cfg).unwrap();
     assert_eq!(got, should_be);
+}
+
+// Default is to sort preprocessors alphabetically.
+#[test]
+fn preprocessor_sorted_by_name() {
+    let cfg_str = r#"
+        [preprocessor.xyz]
+        [preprocessor.abc]
+        "#;
+
+    let cfg = Config::from_str(cfg_str).unwrap();
+
+    let got = determine_preprocessors(&cfg, Path::new("")).unwrap();
+
+    let names: Vec<_> = got.values().map(|p| p.name()).collect();
+    assert_eq!(names, ["abc", "index", "links", "xyz"]);
+}
+
+// Default is to sort renderers alphabetically.
+#[test]
+fn renderers_sorted_by_name() {
+    let cfg_str = r#"
+        [output.xyz]
+        [output.abc]
+        "#;
+
+    let cfg = Config::from_str(cfg_str).unwrap();
+
+    let got = determine_renderers(&cfg).unwrap();
+
+    let names: Vec<_> = got.values().map(|p| p.name()).collect();
+    assert_eq!(names, ["abc", "xyz"]);
 }
