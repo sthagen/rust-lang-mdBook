@@ -63,7 +63,7 @@ fn reasonable_search_index() {
     // html.
     assert_eq!(
         docs[&sneaky]["body"],
-        "I put &lt;HTML&gt; in here! Sneaky inline event alert(\"inline\");. But regular inline is indexed."
+        "I put &lt;HTML&gt; in here! Sneaky inline event alert(“inline”);. But regular inline is indexed."
     );
     assert_eq!(
         docs[&no_headers]["breadcrumbs"],
@@ -117,7 +117,7 @@ fn with_no_source_path() {
     let test = BookTest::from_dir("search/reasonable_search_index");
     let mut book = test.load_book();
     let chapter = Chapter::new("Sample chapter", String::new(), "sample.html", vec![]);
-    book.book.sections.push(BookItem::Chapter(chapter));
+    book.book.items.push(BookItem::Chapter(chapter));
     book.build().unwrap();
 }
 

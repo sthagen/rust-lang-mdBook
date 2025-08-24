@@ -22,8 +22,8 @@ fn footnotes() {
             cmd.expect_stderr(str![[r#"
 [TIMESTAMP] [INFO] (mdbook_driver::mdbook): Book building has started
 [TIMESTAMP] [INFO] (mdbook_driver::mdbook): Running the html backend
-[TIMESTAMP] [WARN] (mdbook_markdown): footnote `multiple-definitions` in <unknown> defined multiple times - not updating to new definition
-[TIMESTAMP] [WARN] (mdbook_markdown): footnote `unused` in `<unknown>` is defined but not referenced
+[TIMESTAMP] [WARN] (mdbook_markdown): footnote `multiple-definitions` in footnotes.md defined multiple times - not updating to new definition
+[TIMESTAMP] [WARN] (mdbook_markdown): footnote `unused` in `footnotes.md` is defined but not referenced
 [TIMESTAMP] [WARN] (mdbook_markdown): footnote `multiple-definitions` in footnotes.md defined multiple times - not updating to new definition
 [TIMESTAMP] [WARN] (mdbook_markdown): footnote `unused` in `footnotes.md` is defined but not referenced
 [TIMESTAMP] [INFO] (mdbook_html::html_handlebars::hbs_renderer): HTML book written to `[ROOT]/book`
@@ -90,23 +90,7 @@ Carrots</li>
 #[test]
 fn smart_punctuation() {
     BookTest::from_dir("markdown/smart_punctuation")
-        // Default is off.
-        .check_main_file(
-            "book/smart_punctuation.html",
-            str![[r##"
-<h1 id="smart-punctuation"><a class="header" href="#smart-punctuation">Smart Punctuation</a></h1>
-<ul>
-<li>En dash: --</li>
-<li>Em dash: ---</li>
-<li>Ellipsis: ...</li>
-<li>Double quote: "quote"</li>
-<li>Single quote: 'quote'</li>
-</ul>
-"##]],
-        )
-        .run("build", |cmd| {
-            cmd.env("MDBOOK_OUTPUT__HTML__SMART_PUNCTUATION", "true");
-        })
+        // Default is on.
         .check_main_file(
             "book/smart_punctuation.html",
             str![[r##"
@@ -117,6 +101,22 @@ fn smart_punctuation() {
 <li>Ellipsis: …</li>
 <li>Double quote: “quote”</li>
 <li>Single quote: ‘quote’</li>
+</ul>
+"##]],
+        )
+        .run("build", |cmd| {
+            cmd.env("MDBOOK_OUTPUT__HTML__SMART_PUNCTUATION", "false");
+        })
+        .check_main_file(
+            "book/smart_punctuation.html",
+            str![[r##"
+<h1 id="smart-punctuation"><a class="header" href="#smart-punctuation">Smart Punctuation</a></h1>
+<ul>
+<li>En dash: --</li>
+<li>Em dash: ---</li>
+<li>Ellipsis: ...</li>
+<li>Double quote: "quote"</li>
+<li>Single quote: 'quote'</li>
 </ul>
 "##]],
         );
