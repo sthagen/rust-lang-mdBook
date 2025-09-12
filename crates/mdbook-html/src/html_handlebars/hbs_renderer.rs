@@ -3,21 +3,21 @@ use super::static_files::StaticFiles;
 use crate::theme::Theme;
 use anyhow::{Context, Result, bail};
 use handlebars::Handlebars;
-use log::{debug, info, trace, warn};
 use mdbook_core::book::{Book, BookItem, Chapter};
 use mdbook_core::config::{BookConfig, Code, Config, HtmlConfig, Playground, RustEdition};
-use mdbook_core::utils;
 use mdbook_core::utils::fs::get_404_output_file;
+use mdbook_core::{static_regex, utils};
 use mdbook_markdown::render_markdown;
 use mdbook_renderer::{RenderContext, Renderer};
-use regex::{Captures, Regex};
+use regex::Captures;
 use serde_json::json;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+use tracing::error;
+use tracing::{debug, info, trace, warn};
 
 /// The HTML renderer for mdBook.
 #[derive(Default)]
@@ -286,7 +286,7 @@ impl HtmlHandlebars {
             return Ok(());
         }
 
-        log::debug!("Emitting redirects");
+        debug!("Emitting redirects");
         let redirects = combine_fragment_redirects(redirects);
 
         for (original, (dest, fragment_map)) in redirects {
@@ -306,7 +306,7 @@ impl HtmlHandlebars {
                      destination."
                 );
             }
-            log::debug!("Redirecting \"{}\" → \"{}\"", original, dest);
+            debug!("Redirecting \"{}\" → \"{}\"", original, dest);
             self.emit_redirect(handlebars, &filename, &dest, &fragment_map)?;
         }
 
@@ -701,9 +701,10 @@ fn make_data(
 /// Goes through the rendered HTML, making sure all header tags have
 /// an anchor respectively so people can link to sections directly.
 fn build_header_links(html: &str) -> String {
-    static BUILD_HEADER_LINKS: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"<h(\d)(?: id="([^"]+)")?(?: class="([^"]+)")?>(.*?)</h\d>"#).unwrap()
-    });
+    static_regex!(
+        BUILD_HEADER_LINKS,
+        r#"<h(\d)(?: id="([^"]+)")?(?: class="([^"]+)")?>(.*?)</h\d>"#
+    );
     static IGNORE_CLASS: &[&str] = &["menu-title", "mdbook-help-title"];
 
     let mut id_counter = HashMap::new();
@@ -757,8 +758,8 @@ fn insert_link_into_header(
 fn convert_fontawesome(html: &str) -> String {
     use font_awesome_as_a_crate as fa;
 
-    let regex = Regex::new(r##"<i([^>]+)class="([^"]+)"([^>]*)></i>"##).unwrap();
-    regex
+    static_regex!(FA_RE, r#"<i([^>]+)class="([^"]+)"([^>]*)></i>"#);
+    FA_RE
         .replace_all(html, |caps: &Captures<'_>| {
             let text = &caps[0];
             let before = &caps[1];
@@ -810,8 +811,7 @@ fn convert_fontawesome(html: &str) -> String {
 // ```
 // This function replaces all commas by spaces in the code block classes
 fn fix_code_blocks(html: &str) -> String {
-    static FIX_CODE_BLOCKS: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r##"<code([^>]+)class="([^"]+)"([^>]*)>"##).unwrap());
+    static_regex!(FIX_CODE_BLOCKS, r#"<code([^>]+)class="([^"]+)"([^>]*)>"#);
 
     FIX_CODE_BLOCKS
         .replace_all(html, |caps: &Captures<'_>| {
@@ -824,8 +824,10 @@ fn fix_code_blocks(html: &str) -> String {
         .into_owned()
 }
 
-static CODE_BLOCK_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r##"((?s)<code[^>]?class="([^"]+)".*?>(.*?)</code>)"##).unwrap());
+static_regex!(
+    CODE_BLOCK_RE,
+    r#"((?s)<code[^>]?class="([^"]+)".*?>(.*?)</code>)"#
+);
 
 fn add_playground_pre(
     html: &str,
@@ -894,10 +896,8 @@ fn add_playground_pre(
 /// Modifies all `<code>` blocks to convert "hidden" lines and to wrap them in
 /// a `<span class="boring">`.
 fn hide_lines(html: &str, code_config: &Code) -> String {
-    static LANGUAGE_REGEX: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"\blanguage-(\w+)\b").unwrap());
-    static HIDELINES_REGEX: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"\bhidelines=(\S+)").unwrap());
+    static_regex!(LANGUAGE_REGEX, r"\blanguage-(\w+)\b");
+    static_regex!(HIDELINES_REGEX, r"\bhidelines=(\S+)");
 
     CODE_BLOCK_RE
         .replace_all(html, |caps: &Captures<'_>| {
@@ -938,8 +938,7 @@ fn hide_lines(html: &str, code_config: &Code) -> String {
 }
 
 fn hide_lines_rust(content: &str) -> String {
-    static BORING_LINES_REGEX: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"^(\s*)#(.?)(.*)$").unwrap());
+    static_regex!(BORING_LINES_REGEX, r"^(\s*)#(.?)(.*)$");
 
     let mut result = String::with_capacity(content.len());
     let mut lines = content.lines().peekable();
@@ -1034,7 +1033,7 @@ fn combine_fragment_redirects(redirects: &HashMap<String, String>) -> CombinedRe
         if let Some((source_path, source_fragment)) = original.rsplit_once('#') {
             let e = combined.entry(source_path.to_string()).or_default();
             if let Some(old) = e.1.insert(format!("#{source_fragment}"), new.clone()) {
-                log::error!(
+                error!(
                     "internal error: found duplicate fragment redirect \
                      {old} for {source_path}#{source_fragment}"
                 );

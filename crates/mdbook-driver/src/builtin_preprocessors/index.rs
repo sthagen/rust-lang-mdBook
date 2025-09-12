@@ -1,9 +1,9 @@
 use anyhow::Result;
-use log::warn;
 use mdbook_core::book::{Book, BookItem};
+use mdbook_core::static_regex;
 use mdbook_preprocessor::{Preprocessor, PreprocessorContext};
-use regex::Regex;
-use std::{path::Path, sync::LazyLock};
+use std::path::Path;
+use tracing::warn;
 
 /// A preprocessor for converting file name `README.md` to `index.md` since
 /// `README.md` is the de facto index file in markdown-based documentation.
@@ -68,9 +68,9 @@ fn warn_readme_name_conflict<P: AsRef<Path>>(readme_path: P, index_path: P) {
 }
 
 fn is_readme_file<P: AsRef<Path>>(path: P) -> bool {
-    static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^readme$").unwrap());
+    static_regex!(README, r"(?i)^readme$");
 
-    RE.is_match(
+    README.is_match(
         path.as_ref()
             .file_stem()
             .and_then(std::ffi::OsStr::to_str)
