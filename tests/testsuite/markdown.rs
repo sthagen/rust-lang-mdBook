@@ -9,8 +9,9 @@ fn custom_header_attributes() {
     BookTest::from_dir("markdown/custom_header_attributes")
         .check_main_file("book/custom_header_attributes.html", str![[r##"
 <h1 id="attrs"><a class="header" href="#attrs">Heading Attributes</a></h1>
-<h2 id="heading-with-classes" class="class1 class2"><a class="header" href="#heading-with-classes">Heading with classes</a></h2>
+<h2 class="class1 class2" id="heading-with-classes"><a class="header" href="#heading-with-classes">Heading with classes</a></h2>
 <h2 id="both" class="class1 class2"><a class="header" href="#both">Heading with id and classes</a></h2>
+<h2 myattr="" otherattr="value" id="myh3" class="myclass1 myclass2"><a class="header" href="#myh3">Heading with attribute</a></h2>
 "##]]);
 }
 
@@ -22,8 +23,6 @@ fn footnotes() {
             cmd.expect_stderr(str![[r#"
  INFO Book building has started
  INFO Running the html backend
- WARN footnote `multiple-definitions` in footnotes.md defined multiple times - not updating to new definition
- WARN footnote `unused` in `footnotes.md` is defined but not referenced
  WARN footnote `multiple-definitions` in footnotes.md defined multiple times - not updating to new definition
  WARN footnote `unused` in `footnotes.md` is defined but not referenced
  INFO HTML book written to `[ROOT]/book`
@@ -43,13 +42,29 @@ fn tables() {
         "book/tables.html",
         str![[r##"
 <h1 id="tables"><a class="header" href="#tables">Tables</a></h1>
-<div class="table-wrapper"><table><thead><tr><th>foo</th><th>bar</th></tr></thead><tbody>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>foo</th><th>bar</th></tr>
+</thead>
+<tbody>
 <tr><td>baz</td><td>bim</td></tr>
 <tr><td>Backslash in code</td><td><code>/</code></td></tr>
 <tr><td>Double back in code</td><td><code>//</code></td></tr>
 <tr><td>Pipe in code</td><td><code>|</code></td></tr>
 <tr><td>Pipe in code2</td><td><code>test | inside</code></td></tr>
-</tbody></table>
+</tbody>
+</table>
+</div>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Neither</th><th style="text-align: left">Left</th><th style="text-align: center">Center</th><th style="text-align: right">Right</th></tr>
+</thead>
+<tbody>
+<tr><td>one</td><td style="text-align: left">two</td><td style="text-align: center">three</td><td style="text-align: right">four</td></tr>
+</tbody>
+</table>
 </div>
 "##]],
     );
@@ -75,12 +90,9 @@ fn tasklists() {
         str![[r##"
 <h2 id="tasklisks"><a class="header" href="#tasklisks">Tasklisks</a></h2>
 <ul>
-<li><input disabled="" type="checkbox" checked=""/>
-Apples</li>
-<li><input disabled="" type="checkbox" checked=""/>
-Broccoli</li>
-<li><input disabled="" type="checkbox"/>
-Carrots</li>
+<li><input disabled="" type="checkbox" checked=""> Apples</li>
+<li><input disabled="" type="checkbox" checked=""> Broccoli</li>
+<li><input disabled="" type="checkbox"> Carrots</li>
 </ul>
 "##]],
     );
@@ -101,7 +113,10 @@ fn smart_punctuation() {
 <li>Ellipsis: …</li>
 <li>Double quote: “quote”</li>
 <li>Single quote: ‘quote’</li>
+<li>Quote in <code>"code"</code></li>
 </ul>
+<pre><code>"quoted"
+</code></pre>
 "##]],
         )
         .run("build", |cmd| {
@@ -117,7 +132,17 @@ fn smart_punctuation() {
 <li>Ellipsis: ...</li>
 <li>Double quote: "quote"</li>
 <li>Single quote: 'quote'</li>
+<li>Quote in <code>"code"</code></li>
 </ul>
+<pre><code>"quoted"
+</code></pre>
 "##]],
         );
+}
+
+// Basic markdown syntax.
+// This doesn't try to cover the commonmark test suite, but maybe it could some day?
+#[test]
+fn basic_markdown() {
+    BookTest::from_dir("markdown/basic_markdown").check_all_main_files();
 }
