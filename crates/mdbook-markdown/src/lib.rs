@@ -4,10 +4,6 @@
 //! [mdBook](https://rust-lang.github.io/mdBook/). The [`pulldown_cmark`]
 //! crate is used as the underlying parser. This crate re-exports
 //! [`pulldown_cmark`] so that you can access its types.
-//!
-//! The parser in this library adds several modifications to the
-//! [`pulldown_cmark`] event stream. For example, it adjusts some links,
-//! modifies the behavior of footnotes, and adds various HTML wrappers.
 
 use pulldown_cmark::{Options, Parser};
 
@@ -28,6 +24,10 @@ pub struct MarkdownOptions {
     ///
     /// This is `true` by default.
     pub definition_lists: bool,
+    /// Enables admonitions.
+    ///
+    /// This is `true` by default.
+    pub admonitions: bool,
 }
 
 impl Default for MarkdownOptions {
@@ -35,6 +35,7 @@ impl Default for MarkdownOptions {
         MarkdownOptions {
             smart_punctuation: true,
             definition_lists: true,
+            admonitions: true,
         }
     }
 }
@@ -52,6 +53,9 @@ pub fn new_cmark_parser<'text>(text: &'text str, options: &MarkdownOptions) -> P
     }
     if options.definition_lists {
         opts.insert(Options::ENABLE_DEFINITION_LIST);
+    }
+    if options.admonitions {
+        opts.insert(Options::ENABLE_GFM);
     }
     Parser::new_ext(text, opts)
 }

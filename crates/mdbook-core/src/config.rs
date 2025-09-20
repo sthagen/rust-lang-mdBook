@@ -436,6 +436,8 @@ pub struct HtmlConfig {
     pub smart_punctuation: bool,
     /// Support for definition lists.
     pub definition_lists: bool,
+    /// Support for admonitions.
+    pub admonitions: bool,
     /// Should mathjax be enabled?
     pub mathjax_support: bool,
     /// Additional CSS stylesheets to include in the rendered page's `<head>`.
@@ -504,6 +506,7 @@ impl Default for HtmlConfig {
             preferred_dark_theme: None,
             smart_punctuation: true,
             definition_lists: true,
+            admonitions: true,
             mathjax_support: false,
             additional_css: Vec::new(),
             additional_js: Vec::new(),
@@ -535,6 +538,14 @@ impl HtmlConfig {
             Some(ref d) => root.join(d),
             None => root.join("theme"),
         }
+    }
+
+    /// Returns the name of the file used for HTTP 404 "not found" with the `.html` extension.
+    pub fn get_404_output_file(&self) -> String {
+        self.input_404
+            .as_ref()
+            .unwrap_or(&"404.md".to_string())
+            .replace(".md", ".html")
     }
 }
 
@@ -703,7 +714,6 @@ impl<'de, T> Updateable<'de> for T where T: Serialize + Deserialize<'de> {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::fs::get_404_output_file;
 
     const COMPLEX_CONFIG: &str = r#"
         [book]
@@ -970,7 +980,7 @@ mod tests {
         let got = Config::from_str(src).unwrap();
         let html_config = got.html_config().unwrap();
         assert_eq!(html_config.input_404, None);
-        assert_eq!(&get_404_output_file(&html_config.input_404), "404.html");
+        assert_eq!(html_config.get_404_output_file(), "404.html");
     }
 
     #[test]
@@ -983,7 +993,7 @@ mod tests {
         let got = Config::from_str(src).unwrap();
         let html_config = got.html_config().unwrap();
         assert_eq!(html_config.input_404, Some("missing.md".to_string()));
-        assert_eq!(&get_404_output_file(&html_config.input_404), "missing.html");
+        assert_eq!(html_config.get_404_output_file(), "missing.html");
     }
 
     #[test]
