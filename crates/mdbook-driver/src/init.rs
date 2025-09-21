@@ -1,14 +1,11 @@
 //! Support for initializing a new book.
 
-use std::fs::{self, File};
-use std::io::Write;
-use std::path::PathBuf;
-
 use super::MDBook;
 use anyhow::{Context, Result};
 use mdbook_core::config::Config;
-use mdbook_core::utils::fs::write_file;
-use mdbook_html::theme;
+use mdbook_core::utils::fs;
+use mdbook_html::theme::Theme;
+use std::path::PathBuf;
 use tracing::{debug, error, info, trace};
 
 /// A helper for setting up a new book and its directory structure.
@@ -104,8 +101,7 @@ impl BookBuilder {
         let cfg =
             toml::to_string(&self.config).with_context(|| "Unable to serialize the config")?;
 
-        std::fs::write(&book_toml, cfg)
-            .with_context(|| format!("Unable to write config to {book_toml:?}"))?;
+        fs::write(&book_toml, cfg)?;
         Ok(())
     }
 
@@ -113,76 +109,15 @@ impl BookBuilder {
         debug!("Copying theme");
 
         let html_config = self.config.html_config().unwrap_or_default();
-        let themedir = html_config.theme_dir(&self.root);
-
-        if !themedir.exists() {
-            debug!(
-                "{} does not exist, creating the directory",
-                themedir.display()
-            );
-            fs::create_dir(&themedir)?;
-        }
-
-        let mut index = File::create(themedir.join("index.hbs"))?;
-        index.write_all(theme::INDEX)?;
-
-        let cssdir = themedir.join("css");
-        if !cssdir.exists() {
-            fs::create_dir(&cssdir)?;
-        }
-
-        let mut general_css = File::create(cssdir.join("general.css"))?;
-        general_css.write_all(theme::GENERAL_CSS)?;
-
-        let mut chrome_css = File::create(cssdir.join("chrome.css"))?;
-        chrome_css.write_all(theme::CHROME_CSS)?;
-
-        if html_config.print.enable {
-            let mut print_css = File::create(cssdir.join("print.css"))?;
-            print_css.write_all(theme::PRINT_CSS)?;
-        }
-
-        let mut variables_css = File::create(cssdir.join("variables.css"))?;
-        variables_css.write_all(theme::VARIABLES_CSS)?;
-
-        let mut favicon = File::create(themedir.join("favicon.png"))?;
-        favicon.write_all(theme::FAVICON_PNG)?;
-
-        let mut favicon = File::create(themedir.join("favicon.svg"))?;
-        favicon.write_all(theme::FAVICON_SVG)?;
-
-        let mut js = File::create(themedir.join("book.js"))?;
-        js.write_all(theme::JS)?;
-
-        let mut highlight_css = File::create(themedir.join("highlight.css"))?;
-        highlight_css.write_all(theme::HIGHLIGHT_CSS)?;
-
-        let mut highlight_js = File::create(themedir.join("highlight.js"))?;
-        highlight_js.write_all(theme::HIGHLIGHT_JS)?;
-
-        write_file(&themedir.join("fonts"), "fonts.css", theme::fonts::CSS)?;
-        for (file_name, contents) in theme::fonts::LICENSES {
-            write_file(&themedir, file_name, contents)?;
-        }
-        for (file_name, contents) in theme::fonts::OPEN_SANS.iter() {
-            write_file(&themedir, file_name, contents)?;
-        }
-        write_file(
-            &themedir,
-            theme::fonts::SOURCE_CODE_PRO.0,
-            theme::fonts::SOURCE_CODE_PRO.1,
-        )?;
-
+        Theme::copy_theme(&html_config, &self.root)?;
         Ok(())
     }
 
     fn build_gitignore(&self) -> Result<()> {
-        debug!("Creating .gitignore");
-
-        let mut f = File::create(self.root.join(".gitignore"))?;
-
-        writeln!(f, "{}", self.config.build.build_dir.display())?;
-
+        fs::write(
+            self.root.join(".gitignore"),
+            format!("{}", self.config.build.build_dir.display()),
+        )?;
         Ok(())
     }
 
@@ -193,14 +128,14 @@ impl BookBuilder {
         let summary = src_dir.join("SUMMARY.md");
         if !summary.exists() {
             trace!("No summary found creating stub summary and chapter_1.md.");
-            let mut f = File::create(&summary).with_context(|| "Unable to create SUMMARY.md")?;
-            writeln!(f, "# Summary")?;
-            writeln!(f)?;
-            writeln!(f, "- [Chapter 1](./chapter_1.md)")?;
+            fs::write(
+                summary,
+                "# Summary\n\
+                 \n\
+                 - [Chapter 1](./chapter_1.md)\n",
+            )?;
 
-            let chapter_1 = src_dir.join("chapter_1.md");
-            let mut f = File::create(chapter_1).with_context(|| "Unable to create chapter_1.md")?;
-            writeln!(f, "# Chapter 1")?;
+            fs::write(src_dir.join("chapter_1.md"), "# Chapter 1\n")?;
         } else {
             trace!("Existing summary found, no need to create stub files.");
         }
