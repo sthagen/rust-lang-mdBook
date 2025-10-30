@@ -19,7 +19,7 @@ use pulldown_cmark::{Alignment, CodeBlockKind, CowStr, Event, LinkType, Tag, Tag
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
-use tracing::{error, warn};
+use tracing::{error, trace, warn};
 
 /// Helper to create a [`QualName`].
 macro_rules! attr_qual_name {
@@ -77,6 +77,8 @@ pub(crate) struct Element {
     pub(crate) attrs: Attributes,
     /// True if this tag ends with `/>`.
     pub(crate) self_closing: bool,
+    /// True if this was raw HTML written in the markdown.
+    pub(crate) was_raw: bool,
 }
 
 impl Element {
@@ -87,6 +89,7 @@ impl Element {
             name,
             attrs: Attributes::new(),
             self_closing: false,
+            was_raw: false,
         }
     }
 
@@ -300,6 +303,7 @@ where
     /// The main processing loop. Processes all events until the end.
     fn process_events(&mut self) {
         while let Some(event) = self.events.next() {
+            trace!("event={event:?}");
             match event {
                 Event::Start(tag) => self.start_tag(tag),
                 Event::End(tag) => {
@@ -599,6 +603,7 @@ where
         let tokens = parse_html(&html);
         let mut is_raw = false;
         for token in tokens {
+            trace!("html token={token:?}");
             match token {
                 Token::DoctypeToken(_) => {}
                 Token::TagToken(tag) => {
@@ -616,6 +621,7 @@ where
                                 name,
                                 attrs,
                                 self_closing: tag.self_closing,
+                                was_raw: true,
                             };
                             fix_html_link(&mut el);
                             self.push(Node::Element(el));
@@ -840,6 +846,11 @@ where
         for heading in headings {
             let node = self.tree.get(heading).unwrap();
             let el = node.value().as_element().unwrap();
+            // Don't modify tags if they were manually written HTML. The
+            // user probably had some intent, and we don't want to mess it up.
+            if el.was_raw {
+                continue;
+            }
             let href = if let Some(id) = el.attr("id") {
                 format!("#{id}")
             } else {
