@@ -19,7 +19,7 @@ use pulldown_cmark::{Alignment, CodeBlockKind, CowStr, Event, LinkType, Tag, Tag
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
-use tracing::{error, trace, warn};
+use tracing::{trace, warn};
 
 /// Helper to create a [`QualName`].
 macro_rules! attr_qual_name {
@@ -306,23 +306,7 @@ where
             trace!("event={event:?}");
             match event {
                 Event::Start(tag) => self.start_tag(tag),
-                Event::End(tag) => {
-                    self.pop();
-                    match tag {
-                        TagEnd::TableHead => {
-                            self.table_state = TableState::Body;
-                            self.push(Node::Element(Element::new("tbody")));
-                        }
-                        TagEnd::TableCell => {
-                            self.table_cell_index += 1;
-                        }
-                        TagEnd::Table => {
-                            // Pop tbody or thead
-                            self.pop();
-                        }
-                        _ => {}
-                    }
-                }
+                Event::End(tag) => self.end_tag(tag),
                 Event::Text(text) => {
                     self.append_text(text.into_tendril());
                 }
@@ -378,6 +362,7 @@ where
                 }
             }
         }
+        self.finish_stack();
         self.collect_footnote_defs();
     }
 
@@ -597,6 +582,46 @@ where
         self.push(Node::Element(element));
     }
 
+    fn end_tag(&mut self, tag: TagEnd) {
+        // TODO: This should validate that the event stack is properly
+        // synchronized with the tag stack. That, would likely require keeping
+        // a parallel "expected end tag" with the tag stack, since mapping a
+        // pulldown-cmark event tag to an HTML tag isn't always clear.
+        //
+        // Check for unclosed HTML tags when exiting a markdown event.
+        while let Some(node_id) = self.tag_stack.last() {
+            let node = self.tree.get(*node_id).unwrap().value();
+            let Node::Element(el) = node else {
+                break;
+            };
+            if !el.was_raw {
+                break;
+            }
+            warn!(
+                "unclosed HTML tag `<{}>` found in `{}` while exiting {tag:?}\n\
+                HTML tags must be closed before exiting a markdown element.",
+                el.name.local,
+                self.options.path.display(),
+            );
+            self.pop();
+        }
+        self.pop();
+        match tag {
+            TagEnd::TableHead => {
+                self.table_state = TableState::Body;
+                self.push(Node::Element(Element::new("tbody")));
+            }
+            TagEnd::TableCell => {
+                self.table_cell_index += 1;
+            }
+            TagEnd::Table => {
+                // Pop tbody or thead
+                self.pop();
+            }
+            _ => {}
+        }
+    }
+
     /// Given some HTML, parse it into [`Node`] elements and append them to
     /// the current node.
     fn append_html(&mut self, html: &str) {
@@ -606,40 +631,10 @@ where
             trace!("html token={token:?}");
             match token {
                 Token::DoctypeToken(_) => {}
-                Token::TagToken(tag) => {
-                    match tag.kind {
-                        TagKind::StartTag => {
-                            let is_closed = is_void_element(&tag.name) || tag.self_closing;
-                            is_raw = matches!(&*tag.name, "script" | "style");
-                            let name = QualName::new(None, html5ever::ns!(html), tag.name);
-                            let attrs = tag
-                                .attrs
-                                .into_iter()
-                                .map(|attr| (attr.name, attr.value))
-                                .collect();
-                            let mut el = Element {
-                                name,
-                                attrs,
-                                self_closing: tag.self_closing,
-                                was_raw: true,
-                            };
-                            fix_html_link(&mut el);
-                            self.push(Node::Element(el));
-                            if is_closed {
-                                // No end element.
-                                self.pop();
-                            }
-                        }
-                        TagKind::EndTag => {
-                            is_raw = false;
-                            if self.is_html_tag_matching(&tag.name) {
-                                self.pop();
-                            }
-                            // else the stack is corrupt. I'm not really sure
-                            // what to do here...
-                        }
-                    }
-                }
+                Token::TagToken(tag) => match tag.kind {
+                    TagKind::StartTag => self.start_html_tag(tag, &mut is_raw),
+                    TagKind::EndTag => self.end_html_tag(tag, &mut is_raw),
+                },
                 Token::CommentToken(comment) => {
                     self.append(Node::Comment(comment));
                 }
@@ -664,22 +659,59 @@ where
         }
     }
 
+    /// Adds an open HTML tag.
+    fn start_html_tag(&mut self, tag: html5ever::tokenizer::Tag, is_raw: &mut bool) {
+        let is_closed = is_void_element(&tag.name) || tag.self_closing;
+        *is_raw = matches!(&*tag.name, "script" | "style");
+        let name = QualName::new(None, html5ever::ns!(html), tag.name);
+        let attrs = tag
+            .attrs
+            .into_iter()
+            .map(|attr| (attr.name, attr.value))
+            .collect();
+        let mut el = Element {
+            name,
+            attrs,
+            self_closing: tag.self_closing,
+            was_raw: true,
+        };
+        fix_html_link(&mut el);
+        self.push(Node::Element(el));
+        if is_closed {
+            // No end element.
+            self.pop();
+        }
+    }
+
+    /// Closes the given HTML tag.
+    fn end_html_tag(&mut self, tag: html5ever::tokenizer::Tag, is_raw: &mut bool) {
+        *is_raw = false;
+        if self.is_html_tag_matching(&tag.name) {
+            self.pop();
+        } else {
+            // The proper thing to do here is to recover. However, the HTML
+            // parsing algorithm for that is quite complex. See
+            // https://html.spec.whatwg.org/multipage/parsing.html#parsing-main-inbody
+            // and the adoption agency algorithm.
+            warn!(
+                "unexpected HTML end tag `</{}>` found in `{}`\n\
+                 Check that the HTML tags are properly balanced.",
+                tag.name,
+                self.options.path.display()
+            );
+        }
+    }
+
     /// This is used to verify HTML parsing keeps the stack of tags in sync.
     fn is_html_tag_matching(&self, name: &str) -> bool {
         let current = self.tree.get(self.current_node).unwrap().value();
         if let Node::Element(el) = current
             && el.name() == name
         {
-            return true;
+            true
+        } else {
+            false
         }
-        error!(
-            "internal error: HTML tag stack out of sync.\n
-             path: `{}`\n\
-             current={current:?}\n\
-             pop name: {name}",
-            self.options.path.display()
-        );
-        false
     }
 
     /// Eats all pulldown-cmark events until the next `End` matching the
@@ -734,6 +766,40 @@ where
             }
         }
         output
+    }
+
+    /// Deals with any unclosed elements on the stack.
+    fn finish_stack(&mut self) {
+        while let Some(node_id) = self.tag_stack.pop() {
+            let node = self.tree.get(node_id).unwrap().value();
+            match node {
+                Node::Fragment => {}
+                Node::Element(el) => {
+                    if el.was_raw {
+                        warn!(
+                            "unclosed HTML tag `<{}>` found in `{}`",
+                            el.name.local,
+                            self.options.path.display()
+                        );
+                    } else {
+                        panic!(
+                            "internal error: expected empty tag stack.\n
+                             path: `{}`\n\
+                             element={el:?}",
+                            self.options.path.display()
+                        );
+                    }
+                }
+                node => {
+                    panic!(
+                        "internal error: expected empty tag stack.\n
+                         path: `{}`\n\
+                         node={node:?}",
+                        self.options.path.display()
+                    );
+                }
+            }
+        }
     }
 
     /// Appends a new footnote reference.
