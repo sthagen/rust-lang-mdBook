@@ -341,6 +341,11 @@ window.search = window.search || {};
                         marker.unmark();
                     }, 300);
                 }
+                // also removes the `?URL_MARK_PARAM=` search param so that
+                // in-page navigation doesn't make highlights unexpectedly appear again
+                const url = new URL(window.location.href);
+                url.searchParams.delete(URL_MARK_PARAM);
+                history.replaceState(null, '', url);
             };
 
             for (let i = 0; i < markers.length; i++) {
