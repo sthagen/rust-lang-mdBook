@@ -19,6 +19,14 @@ function playground_text(playground, hidden = true) {
     }
 }
 
+/**
+ * Helper for global keypress handlers so they don't trigger when certain elements are active.
+ * @returns {boolean} True if the keypress handler should be skipped.
+ */
+function mdbook_something_else_has_focus(e) {
+    return /^(?:input|select|textarea)$/i.test(e.target.nodeName);
+}
+
 (function codeSnippets() {
     function fetch_with_timeout(url, options, timeout = 6000) {
         return Promise.race([
@@ -648,12 +656,15 @@ aria-label="Show hidden lines"></button>';
 
 (function chapterNavigation() {
     document.addEventListener('keydown', function(e) {
-        if (e.altKey || e.ctrlKey || e.metaKey) {
+        if (e.altKey ||
+            e.ctrlKey ||
+            e.metaKey ||
+            window.search && window.search.hasFocus() ||
+            mdbook_something_else_has_focus(e)
+        ) {
             return;
         }
-        if (window.search && window.search.hasFocus()) {
-            return;
-        }
+
         const html = document.querySelector('html');
 
         function next() {

@@ -10,9 +10,10 @@ press-key: "s"
 wait-for: 200
 wait-for-css: ("#mdbook-search-wrapper", {"display": "none"})
 
+// ? inside ACE editor shouldn't show global help popup.
 press-key: "?"
 wait-for: 200
-wait-for-css: ("#mdbook-help-container", {"display": "flex"})
+wait-for-css: ("#mdbook-help-container", {"display": "none"})
 
 // Make sure arrow keys don"t navigate.
 press-key: "ArrowRight"
