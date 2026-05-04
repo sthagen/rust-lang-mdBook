@@ -357,7 +357,7 @@ window.search = window.search || {};
             e.shiftKey ||
             e.target.type === 'textarea' ||
             e.target.type === 'text' ||
-            !hasFocus() && /^(?:input|select|textarea)$/i.test(e.target.nodeName)
+            !hasFocus() && mdbook_something_else_has_focus(e)
         ) {
             return;
         }
