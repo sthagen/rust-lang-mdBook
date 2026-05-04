@@ -8,11 +8,13 @@ press-key: 'x'
 wait-for: '#shadow-input-host'
 // See what happens when the s key is pressed.
 press-key: 's'
-wait-for-css-false: ("#mdbook-search-wrapper", {"display": "none"})
+wait-for: 200
+wait-for-css: ("#mdbook-search-wrapper", {"display": "none"})
 
 // Also try the global key handlers.
 reload:
 press-key: 'x'
 wait-for: '#shadow-input-host'
 press-key: '?'
-wait-for-css: ("#mdbook-help-container", {"display": "flex"})
+wait-for: 200
+wait-for-css: ("#mdbook-help-container", {"display": "none"})

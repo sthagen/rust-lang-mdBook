@@ -24,7 +24,10 @@ function playground_text(playground, hidden = true) {
  * @returns {boolean} True if the keypress handler should be skipped.
  */
 function mdbook_something_else_has_focus(e) {
-    return /^(?:input|select|textarea)$/i.test(e.target.nodeName);
+    // Check composedPath in case the event happened from something generated
+    // from the shadowDOM.
+    const target = e.composedPath()[0] || e.target;
+    return /^(?:input|select|textarea)$/i.test(target.nodeName);
 }
 
 (function codeSnippets() {
