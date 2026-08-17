@@ -111,6 +111,7 @@ site-url = "/example-book/"
 cname = "myproject.rs"
 input-404 = "not-found.md"
 sidebar-header-nav = true
+zoomable-images = true
 ```
 
 The following configuration options are available:
@@ -170,6 +171,7 @@ The following configuration options are available:
   Static CSS and JS files can reference each other using `{{ resource "filename" }}` directives.
   Defaults to `true`.
 - **sidebar-header-nav:** If `true`, the sidebar will contain navigation for headers on the current page. Default is `true`.
+- **zoomable-images:** If `true`, when clicking on images, it will open a modal with an expanded view of the image. Default is `true`.
 
 [custom domain]: https://docs.github.com/en/github/working-with-github-pages/managing-a-custom-domain-for-your-github-pages-site
 
