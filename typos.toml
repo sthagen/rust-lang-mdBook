@@ -5,7 +5,6 @@ extend-exclude = [
     "*.svg",
     "*.min.js",
     "tests/",
-    "CHANGELOG.md",
     "crates/mdbook-html/front-end/js/highlight.js",
     "crates/mdbook-html/front-end/playground_editor/ace.js",
 ]
