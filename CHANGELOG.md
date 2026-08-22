@@ -348,7 +348,7 @@ The following is a summary of the changes that may require your attention when u
   [#2791](https://github.com/rust-lang/mdBook/pull/2791)
 - ❗ Changed preprocessor `command` to use paths relative to the book root.
   [#2796](https://github.com/rust-lang/mdBook/pull/2796)
-- ❗ Replaced the `{{#previous}}` and `{{#next}}` handelbars navigation helpers with objects.
+- ❗ Replaced the `{{#previous}}` and `{{#next}}` handlebars navigation helpers with objects.
   [#2794](https://github.com/rust-lang/mdBook/pull/2794)
 - ❗ Use embedded SVG instead of fonts for icons, font-awesome 6.2.
   [#1330](https://github.com/rust-lang/mdBook/pull/1330)
