@@ -150,6 +150,7 @@ enum LinkType<'a> {
     Playground(PathBuf, Vec<&'a str>),
     RustdocInclude(PathBuf, RangeOrAnchor),
     Title(&'a str),
+    Invalid(String),
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -215,7 +216,7 @@ impl<'a> LinkType<'a> {
     fn relative_path<P: AsRef<Path>>(self, base: P) -> Option<PathBuf> {
         let base = base.as_ref();
         match self {
-            LinkType::Escaped => None,
+            LinkType::Escaped | LinkType::Invalid(_) => None,
             LinkType::Include(p, _) => Some(return_relative_path(base, &p)),
             LinkType::Playground(p, _) => Some(return_relative_path(base, &p)),
             LinkType::RustdocInclude(p, _) => Some(return_relative_path(base, &p)),
@@ -261,9 +262,11 @@ fn parse_range_or_anchor(parts: Option<&str>) -> RangeOrAnchor {
     }
 }
 
-fn parse_quoted_path(input: &str) -> Option<(PathBuf, &str)> {
+fn parse_quoted_path(input: &str) -> Result<(PathBuf, &str), &'static str> {
     let input = input.trim_start();
-    let after_quote = input.strip_prefix('"')?;
+    let Some(after_quote) = input.strip_prefix('"') else {
+        return Err("expected opening quote");
+    };
     let mut path = String::new();
     let mut chars = after_quote.char_indices();
     let mut closed = false;
@@ -284,23 +287,27 @@ fn parse_quoted_path(input: &str) -> Option<(PathBuf, &str)> {
     }
 
     if closed {
-        Some((PathBuf::from(path), &after_quote[end_index..]))
+        Ok((PathBuf::from(path), &after_quote[end_index..]))
     } else {
-        None
+        Err("unclosed quote in path")
     }
 }
 
 fn parse_include_path(path: &str) -> Option<LinkType<'static>> {
     let trimmed = path.trim();
     if trimmed.starts_with('"') {
-        let (path, after) = parse_quoted_path(trimmed)?;
-        let after = after.trim_start();
-        let range_or_anchor = if let Some(range_part) = after.strip_prefix(':') {
-            parse_range_or_anchor(Some(range_part))
-        } else {
-            parse_range_or_anchor(None)
-        };
-        Some(LinkType::Include(path, range_or_anchor))
+        match parse_quoted_path(trimmed) {
+            Ok((path, after)) => {
+                let after = after.trim_start();
+                let range_or_anchor = if let Some(range_part) = after.strip_prefix(':') {
+                    parse_range_or_anchor(Some(range_part))
+                } else {
+                    parse_range_or_anchor(None)
+                };
+                Some(LinkType::Include(path, range_or_anchor))
+            }
+            Err(err) => Some(LinkType::Invalid(err.to_string())),
+        }
     } else {
         let mut path_props = trimmed.split_whitespace();
         let file_arg = path_props.next()?;
@@ -314,14 +321,18 @@ fn parse_include_path(path: &str) -> Option<LinkType<'static>> {
 fn parse_rustdoc_include_path(path: &str) -> Option<LinkType<'static>> {
     let trimmed = path.trim();
     if trimmed.starts_with('"') {
-        let (path, after) = parse_quoted_path(trimmed)?;
-        let after = after.trim_start();
-        let range_or_anchor = if let Some(range_part) = after.strip_prefix(':') {
-            parse_range_or_anchor(Some(range_part))
-        } else {
-            parse_range_or_anchor(None)
-        };
-        Some(LinkType::RustdocInclude(path, range_or_anchor))
+        match parse_quoted_path(trimmed) {
+            Ok((path, after)) => {
+                let after = after.trim_start();
+                let range_or_anchor = if let Some(range_part) = after.strip_prefix(':') {
+                    parse_range_or_anchor(Some(range_part))
+                } else {
+                    parse_range_or_anchor(None)
+                };
+                Some(LinkType::RustdocInclude(path, range_or_anchor))
+            }
+            Err(err) => Some(LinkType::Invalid(err.to_string())),
+        }
     } else {
         let mut path_props = trimmed.split_whitespace();
         let file_arg = path_props.next()?;
@@ -332,17 +343,21 @@ fn parse_rustdoc_include_path(path: &str) -> Option<LinkType<'static>> {
     }
 }
 
-fn parse_playground_args(rest: &str) -> Option<(PathBuf, Vec<&str>)> {
+fn parse_playground_args<'a>(rest: &'a str) -> Option<LinkType<'a>> {
     let trimmed = rest.trim_start();
     if trimmed.starts_with('"') {
-        let (path, after) = parse_quoted_path(trimmed)?;
-        let props: Vec<&str> = after.split_whitespace().collect();
-        Some((path, props))
+        match parse_quoted_path(trimmed) {
+            Ok((path, after)) => {
+                let props: Vec<&'a str> = after.split_whitespace().collect();
+                Some(LinkType::Playground(path, props))
+            }
+            Err(err) => Some(LinkType::Invalid(err.to_string())),
+        }
     } else {
         let mut path_props = trimmed.split_whitespace();
         let file_arg = path_props.next()?;
-        let props: Vec<&str> = path_props.collect();
-        Some((file_arg.into(), props))
+        let props: Vec<&'a str> = path_props.collect();
+        Some(LinkType::Playground(file_arg.into(), props))
     }
 }
 
@@ -368,7 +383,6 @@ impl<'a> Link<'a> {
             }
             (_, Some(link_kind), Some(rest)) if link_kind.as_str() == "playground" => {
                 parse_playground_args(rest.as_str())
-                    .map(|(path, props)| LinkType::Playground(path, props))
             }
             (_, Some(link_kind), Some(rest)) if link_kind.as_str() == "playpen" => {
                 warn!(
@@ -377,7 +391,6 @@ impl<'a> Link<'a> {
                     please update your book to use the new name"
                 );
                 parse_playground_args(rest.as_str())
-                    .map(|(path, props)| LinkType::Playground(path, props))
             }
             (Some(mat), None, None) if mat.as_str().starts_with(ESCAPE_CHAR) => {
                 Some(LinkType::Escaped)
@@ -402,6 +415,7 @@ impl<'a> Link<'a> {
     ) -> Result<String> {
         let base = base.as_ref();
         match self.link_type {
+            LinkType::Invalid(ref msg) => anyhow::bail!("{msg}"),
             // omit the escape char
             LinkType::Escaped => Ok(self.link_text[1..].to_owned()),
             LinkType::Include(ref pat, ref range_or_anchor) => {
@@ -812,7 +826,15 @@ mod tests {
     fn test_find_links_unclosed_quote() {
         let s = "Some random text with {{#include \"unclosed.md}}...";
         let res = find_links(s).collect::<Vec<_>>();
-        assert_eq!(res, vec![]);
+        assert_eq!(
+            res,
+            vec![Link {
+                start_index: 22,
+                end_index: 47,
+                link_type: LinkType::Invalid("unclosed quote in path".to_string()),
+                link_text: "{{#include \"unclosed.md}}",
+            }]
+        );
     }
 
     #[test]
@@ -1172,7 +1194,26 @@ mod tests {
     }
 
     #[test]
-    fn parse_quoted_path_unclosed_returns_none() {
-        assert_eq!(parse_include_path(r#""unclosed.md"#), None);
+    fn parse_quoted_path_unclosed_returns_error() {
+        assert_eq!(
+            parse_include_path(r#""unclosed.md"#),
+            Some(LinkType::Invalid("unclosed quote in path".to_string()))
+        );
+        assert_eq!(
+            parse_rustdoc_include_path(r#""unclosed.rs"#),
+            Some(LinkType::Invalid("unclosed quote in path".to_string()))
+        );
+        assert_eq!(
+            parse_playground_args(r#""unclosed.rs"#),
+            Some(LinkType::Invalid("unclosed quote in path".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_replace_all_unclosed_quote() {
+        let start = "Some text with {{#include \"unclosed.md}} here.";
+        let mut chapter_title = "test".to_owned();
+        let res = replace_all(start, "", "", 0, &mut chapter_title);
+        assert_eq!(res, start);
     }
 }
