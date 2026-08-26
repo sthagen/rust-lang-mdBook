@@ -12,7 +12,7 @@ fn basic_init() {
     test.run("init", |cmd| {
         cmd.expect_stdout(str![[r#"
 
-Do you want a .gitignore to be created? (y/n)
+Do you want a .gitignore to be created? (y/N)
 What title would you like to give the book? 
 
 All done, no errors...
@@ -109,7 +109,7 @@ fn no_git_config_with_title() {
     test.run("init", |cmd| {
         cmd.expect_stdout(str![[r#"
 
-Do you want a .gitignore to be created? (y/n)
+Do you want a .gitignore to be created? (y/N)
 
 All done, no errors...
 
