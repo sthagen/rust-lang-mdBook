@@ -41,7 +41,7 @@ pub fn execute(args: &ArgMatches) -> Result<()> {
         // Skip this if `--force` is present
         if !args.get_flag("force") && theme_dir.exists() {
             println!("This could potentially overwrite files already present in that directory.");
-            print!("\nAre you sure you want to continue? (y/n) ");
+            print!("\nAre you sure you want to continue? (y/N) ");
 
             // Read answer from user and exit if it's not 'yes'
             if confirm() {
@@ -58,7 +58,7 @@ pub fn execute(args: &ArgMatches) -> Result<()> {
             _ => builder.create_gitignore(false),
         };
     } else if !args.get_flag("force") {
-        println!("\nDo you want a .gitignore to be created? (y/n)");
+        println!("\nDo you want a .gitignore to be created? (y/N)");
         if confirm() {
             builder.create_gitignore(true);
         }
