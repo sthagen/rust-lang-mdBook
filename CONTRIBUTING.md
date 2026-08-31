@@ -111,6 +111,19 @@ Like formatting your code with `rustfmt`, running clippy regularly and before yo
     typos
     ```
 
+### Auditing dependencies with `cargo audit`
+
+[`cargo audit`](https://github.com/rustsec/cargo-audit) is a tool that checks the repository for known vulnerabilities in the dependencies.
+
+1. Install `cargo audit`:
+    ```
+    cargo install cargo-audit
+    ```
+2. Run it from the repository root:
+    ```
+    cargo audit
+    ```
+
 ## Change requirements
 
 Please consider the following when making a change:
