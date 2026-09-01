@@ -140,6 +140,24 @@ With the following syntax, you can include files into your book:
 
 The path to the file has to be relative from the current source file.
 
+If the file name contains spaces, wrap the path in double quotes:
+
+```hbs
+\{{#include "file with spaces.rs"}}
+```
+
+Range and anchor syntax works the same after the closing quote:
+
+```hbs
+\{{#include "file with spaces.rs":2:10}}
+\{{#include "file with spaces.rs":my_anchor}}
+```
+
+Inside quotes only `\"` and `\\` are treated as escape sequences; any
+other backslash is kept as a literal path character (useful for
+Windows-style paths). An unclosed quote is an error. Quoted paths work
+for `rustdoc_include` as well.
+
 mdBook will interpret included files as Markdown. Since the include command
 is usually used for inserting code snippets and examples, you will often
 wrap the command with ```` ``` ```` to display the file contents without
