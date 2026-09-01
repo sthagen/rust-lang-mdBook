@@ -136,6 +136,16 @@ jobs:
           echo `pwd`/installed-bins >> $GITHUB_PATH
       - run: cargo semver-checks --workspace
 
+  audit:
+    name: Check crates audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install cargo audit
+        run: rustup update stable && rustup default stable && cargo install cargo-audit --locked
+      - name: Run cargo audit
+        run: cargo audit
+
   # The success job is here to consolidate the total success/failure state of
   # all other jobs. This job is then included in the GitHub branch protection
   # rule which prevents merges unless all other jobs are passing. This makes
@@ -153,6 +163,7 @@ jobs:
       - clippy
       - docs
       - check-version-bump
+      - audit
     runs-on: ubuntu-latest
     steps:
       - run: jq --exit-status 'all(.result == "success")' <<< '${{ toJson(needs) }}'
