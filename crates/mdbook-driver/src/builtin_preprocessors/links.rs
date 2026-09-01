@@ -315,11 +315,7 @@ where
         match parse_quoted_path(trimmed) {
             Ok((path, after)) => {
                 let after = after.trim_start();
-                let range_or_anchor = if let Some(range_part) = after.strip_prefix(':') {
-                    parse_range_or_anchor(Some(range_part))
-                } else {
-                    parse_range_or_anchor(None)
-                };
+                let range_or_anchor = parse_range_or_anchor(after.strip_prefix(':'));
                 Some(constructor(path, range_or_anchor))
             }
             Err(err) => Some(LinkType::Invalid(err.to_string())),
