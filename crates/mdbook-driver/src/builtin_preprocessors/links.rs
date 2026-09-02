@@ -99,17 +99,25 @@ where
         match link.render_with_path(path, chapter_title) {
             Ok(new_content) => {
                 if depth < MAX_LINK_NESTED_DEPTH {
-                    if let Some(rel_path) = link.link_type.relative_path(path) {
-                        replaced.push_str(&replace_all(
-                            &new_content,
-                            rel_path,
-                            source,
-                            depth + 1,
-                            chapter_title,
-                        ));
+                    // use split('\n') instead of lines because we DON'T
+                    // want the last \n to be removed
+                    // Otherwise includes starting a new line would be prefixed
+                    // by the preceding line
+                    let prefix = replaced.split('\n').last().unwrap_or("");
+                    let raw_new_content = if let Some(rel_path) = link.link_type.relative_path(path)
+                    {
+                        replace_all(&new_content, rel_path, source, depth + 1, chapter_title)
                     } else {
-                        replaced.push_str(&new_content);
-                    }
+                        new_content
+                    };
+                    // use lines instead of split('\n') because we DO
+                    // want the last \n to be removed
+                    // Otherwise inlined includes would fail
+                    let prefixed_new_content = raw_new_content
+                        .lines()
+                        .collect::<Vec<_>>()
+                        .join(&format!("\n{prefix}"));
+                    replaced.push_str(&prefixed_new_content);
                 } else {
                     error!(
                         "Stack depth exceeded in {}. Check for cyclic includes",
@@ -142,6 +150,7 @@ enum LinkType<'a> {
     Playground(PathBuf, Vec<&'a str>),
     RustdocInclude(PathBuf, RangeOrAnchor),
     Title(&'a str),
+    Invalid(String),
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -207,7 +216,7 @@ impl<'a> LinkType<'a> {
     fn relative_path<P: AsRef<Path>>(self, base: P) -> Option<PathBuf> {
         let base = base.as_ref();
         match self {
-            LinkType::Escaped => None,
+            LinkType::Escaped | LinkType::Invalid(_) => None,
             LinkType::Include(p, _) => Some(return_relative_path(base, &p)),
             LinkType::Playground(p, _) => Some(return_relative_path(base, &p)),
             LinkType::RustdocInclude(p, _) => Some(return_relative_path(base, &p)),
@@ -253,22 +262,94 @@ fn parse_range_or_anchor(parts: Option<&str>) -> RangeOrAnchor {
     }
 }
 
-fn parse_include_path(path: &str) -> LinkType<'static> {
-    let mut parts = path.splitn(2, ':');
+/// Parses the path inside a quoted include argument: `after_quote` starts
+/// right after the opening `"` (the caller strips it).
+fn parse_quoted_path(after_quote: &str) -> Result<(PathBuf, &str), &'static str> {
+    let mut path = String::new();
+    let mut chars = after_quote.char_indices();
+    let mut closed = false;
+    let mut end_index = 0;
 
-    let path = parts.next().unwrap().into();
-    let range_or_anchor = parse_range_or_anchor(parts.next());
+    while let Some((idx, ch)) = chars.next() {
+        if ch == '\\' {
+            match chars.next() {
+                // Only `\"` and `\\` are escape sequences.
+                Some((_, '"')) => path.push('"'),
+                Some((_, '\\')) => path.push('\\'),
+                // Any other `\X` (e.g. `\t`, `\n`, Windows `\U`) preserves
+                // the backslash as a literal path character.
+                Some((_, other)) => {
+                    path.push('\\');
+                    path.push(other);
+                }
+                None => return Err("unclosed quote in path"),
+            }
+        } else if ch == '"' {
+            closed = true;
+            end_index = idx + 1;
+            break;
+        } else {
+            path.push(ch);
+        }
+    }
 
-    LinkType::Include(path, range_or_anchor)
+    if closed {
+        Ok((PathBuf::from(path), &after_quote[end_index..]))
+    } else {
+        Err("unclosed quote in path")
+    }
 }
 
-fn parse_rustdoc_include_path(path: &str) -> LinkType<'static> {
-    let mut parts = path.splitn(2, ':');
+/// Parse a path that may be quoted (for paths with spaces) or unquoted
+/// (backward-compatible split on whitespace).
+fn parse_quoted_or_plain<F>(raw: &str, constructor: F) -> Option<LinkType<'static>>
+where
+    F: FnOnce(PathBuf, RangeOrAnchor) -> LinkType<'static>,
+{
+    let trimmed = raw.trim();
+    if let Some(quoted) = trimmed.strip_prefix('"') {
+        match parse_quoted_path(quoted) {
+            Ok((path, after)) => {
+                let after = after.trim_start();
+                let range_or_anchor = parse_range_or_anchor(after.strip_prefix(':'));
+                Some(constructor(path, range_or_anchor))
+            }
+            Err(err) => Some(LinkType::Invalid(err.to_string())),
+        }
+    } else {
+        let mut path_props = trimmed.split_whitespace();
+        let file_arg = path_props.next()?;
+        let mut parts = file_arg.splitn(2, ':');
+        let path = parts.next().unwrap().into();
+        let range_or_anchor = parse_range_or_anchor(parts.next());
+        Some(constructor(path, range_or_anchor))
+    }
+}
 
-    let path = parts.next().unwrap().into();
-    let range_or_anchor = parse_range_or_anchor(parts.next());
+fn parse_include_path(path: &str) -> Option<LinkType<'static>> {
+    parse_quoted_or_plain(path, LinkType::Include)
+}
 
-    LinkType::RustdocInclude(path, range_or_anchor)
+fn parse_rustdoc_include_path(path: &str) -> Option<LinkType<'static>> {
+    parse_quoted_or_plain(path, LinkType::RustdocInclude)
+}
+
+fn parse_playground_args<'a>(rest: &'a str) -> Option<LinkType<'a>> {
+    let trimmed = rest.trim_start();
+    if let Some(quoted) = trimmed.strip_prefix('"') {
+        match parse_quoted_path(quoted) {
+            Ok((path, after)) => {
+                let props: Vec<&'a str> = after.split_whitespace().collect();
+                Some(LinkType::Playground(path, props))
+            }
+            Err(err) => Some(LinkType::Invalid(err.to_string())),
+        }
+    } else {
+        let mut path_props = trimmed.split_whitespace();
+        let file_arg = path_props.next()?;
+        let props: Vec<&'a str> = path_props.collect();
+        Some(LinkType::Playground(file_arg.into(), props))
+    }
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -282,28 +363,25 @@ struct Link<'a> {
 impl<'a> Link<'a> {
     fn from_capture(cap: Captures<'a>) -> Option<Link<'a>> {
         let link_type = match (cap.get(0), cap.get(1), cap.get(2)) {
-            (_, Some(typ), Some(title)) if typ.as_str() == "title" => {
+            (_, Some(link_kind), Some(title)) if link_kind.as_str() == "title" => {
                 Some(LinkType::Title(title.as_str()))
             }
-            (_, Some(typ), Some(rest)) => {
-                let mut path_props = rest.as_str().split_whitespace();
-                let file_arg = path_props.next();
-                let props: Vec<&str> = path_props.collect();
-
-                match (typ.as_str(), file_arg) {
-                    ("include", Some(pth)) => Some(parse_include_path(pth)),
-                    ("playground", Some(pth)) => Some(LinkType::Playground(pth.into(), props)),
-                    ("playpen", Some(pth)) => {
-                        warn!(
-                            "the {{{{#playpen}}}} expression has been \
-                            renamed to {{{{#playground}}}}, \
-                            please update your book to use the new name"
-                        );
-                        Some(LinkType::Playground(pth.into(), props))
-                    }
-                    ("rustdoc_include", Some(pth)) => Some(parse_rustdoc_include_path(pth)),
-                    _ => None,
-                }
+            (_, Some(link_kind), Some(rest)) if link_kind.as_str() == "include" => {
+                parse_include_path(rest.as_str())
+            }
+            (_, Some(link_kind), Some(rest)) if link_kind.as_str() == "rustdoc_include" => {
+                parse_rustdoc_include_path(rest.as_str())
+            }
+            (_, Some(link_kind), Some(rest)) if link_kind.as_str() == "playground" => {
+                parse_playground_args(rest.as_str())
+            }
+            (_, Some(link_kind), Some(rest)) if link_kind.as_str() == "playpen" => {
+                warn!(
+                    "the {{{{#playpen}}}} expression has been \
+                    renamed to {{{{#playground}}}}, \
+                    please update your book to use the new name"
+                );
+                parse_playground_args(rest.as_str())
             }
             (Some(mat), None, None) if mat.as_str().starts_with(ESCAPE_CHAR) => {
                 Some(LinkType::Escaped)
@@ -328,6 +406,7 @@ impl<'a> Link<'a> {
     ) -> Result<String> {
         let base = base.as_ref();
         match self.link_type {
+            LinkType::Invalid(ref msg) => anyhow::bail!("{msg}"),
             // omit the escape char
             LinkType::Escaped => Ok(self.link_text[1..].to_owned()),
             LinkType::Include(ref pat, ref range_or_anchor) => {
@@ -645,6 +724,129 @@ mod tests {
     }
 
     #[test]
+    fn test_find_links_with_space_in_path() {
+        let s = "Some random text with {{#include \"fila a.md\"}}...";
+        let res = find_links(s).collect::<Vec<_>>();
+        assert_eq!(
+            res,
+            vec![Link {
+                start_index: 22,
+                end_index: 46,
+                link_type: LinkType::Include(
+                    PathBuf::from("fila a.md"),
+                    RangeOrAnchor::Range(LineRange::from(..)),
+                ),
+                link_text: "{{#include \"fila a.md\"}}",
+            }]
+        );
+    }
+
+    #[test]
+    fn test_find_links_with_space_in_path_and_range() {
+        let s = "Some random text with {{#include \"fila a.md\":1:2}}...";
+        let res = find_links(s).collect::<Vec<_>>();
+        assert_eq!(
+            res,
+            vec![Link {
+                start_index: 22,
+                end_index: 50,
+                link_type: LinkType::Include(
+                    PathBuf::from("fila a.md"),
+                    RangeOrAnchor::Range(LineRange::from(0..2)),
+                ),
+                link_text: "{{#include \"fila a.md\":1:2}}",
+            }]
+        );
+    }
+
+    #[test]
+    fn test_find_links_rustdoc_include_with_space_in_path() {
+        let s = "Some random text with {{#rustdoc_include \"fila a.rs\"}}...";
+        let res = find_links(s).collect::<Vec<_>>();
+        assert_eq!(
+            res,
+            vec![Link {
+                start_index: 22,
+                end_index: 54,
+                link_type: LinkType::RustdocInclude(
+                    PathBuf::from("fila a.rs"),
+                    RangeOrAnchor::Range(LineRange::from(..)),
+                ),
+                link_text: "{{#rustdoc_include \"fila a.rs\"}}",
+            }]
+        );
+    }
+
+    #[test]
+    fn test_find_links_rustdoc_include_with_space_in_path_and_range() {
+        let s = "Some random text with {{#rustdoc_include \"fila a.rs\":1:5}}...";
+        let res = find_links(s).collect::<Vec<_>>();
+        assert_eq!(
+            res,
+            vec![Link {
+                start_index: 22,
+                end_index: 58,
+                link_type: LinkType::RustdocInclude(
+                    PathBuf::from("fila a.rs"),
+                    RangeOrAnchor::Range(LineRange::from(0..5)),
+                ),
+                link_text: "{{#rustdoc_include \"fila a.rs\":1:5}}",
+            }]
+        );
+    }
+
+    #[test]
+    fn test_find_links_playground_with_space_in_path() {
+        let s = "Some random text with {{#playground \"fila a.rs\" editable no_run}}...";
+        let res = find_links(s).collect::<Vec<_>>();
+        assert_eq!(
+            res,
+            vec![Link {
+                start_index: 22,
+                end_index: 65,
+                link_type: LinkType::Playground(
+                    PathBuf::from("fila a.rs"),
+                    vec!["editable", "no_run"],
+                ),
+                link_text: "{{#playground \"fila a.rs\" editable no_run}}",
+            }]
+        );
+    }
+
+    #[test]
+    fn test_find_links_unclosed_quote() {
+        let s = "Some random text with {{#include \"unclosed.md}}...";
+        let res = find_links(s).collect::<Vec<_>>();
+        assert_eq!(
+            res,
+            vec![Link {
+                start_index: 22,
+                end_index: 47,
+                link_type: LinkType::Invalid("unclosed quote in path".to_string()),
+                link_text: "{{#include \"unclosed.md}}",
+            }]
+        );
+    }
+
+    #[test]
+    fn test_find_links_with_escaped_quotes_in_path() {
+        let s = "Some random text with {{#include \"file \\\"name\\\".md\"}}...";
+        let res = find_links(s).collect::<Vec<_>>();
+        assert_eq!(
+            res,
+            vec![Link {
+                start_index: 22,
+                end_index: 53,
+                link_type: LinkType::Include(
+                    PathBuf::from("file \"name\".md"),
+                    RangeOrAnchor::Range(LineRange::from(..)),
+                ),
+                link_text: "{{#include \"file \\\"name\\\".md\"}}",
+            }]
+        );
+    }
+
+    #[test]
     fn test_find_links_with_anchor() {
         let s = "Some random text with {{#include file.rs:anchor}}...";
         let res = find_links(s).collect::<Vec<_>>();
@@ -756,7 +958,7 @@ mod tests {
 
     #[test]
     fn parse_without_colon_includes_all() {
-        let link_type = parse_include_path("arbitrary");
+        let link_type = parse_include_path("arbitrary").unwrap();
         assert_eq!(
             link_type,
             LinkType::Include(
@@ -768,7 +970,7 @@ mod tests {
 
     #[test]
     fn parse_with_nothing_after_colon_includes_all() {
-        let link_type = parse_include_path("arbitrary:");
+        let link_type = parse_include_path("arbitrary:").unwrap();
         assert_eq!(
             link_type,
             LinkType::Include(
@@ -780,7 +982,7 @@ mod tests {
 
     #[test]
     fn parse_with_two_colons_includes_all() {
-        let link_type = parse_include_path("arbitrary::");
+        let link_type = parse_include_path("arbitrary::").unwrap();
         assert_eq!(
             link_type,
             LinkType::Include(
@@ -792,7 +994,7 @@ mod tests {
 
     #[test]
     fn parse_with_garbage_after_two_colons_includes_all() {
-        let link_type = parse_include_path("arbitrary::NaN");
+        let link_type = parse_include_path("arbitrary::NaN").unwrap();
         assert_eq!(
             link_type,
             LinkType::Include(
@@ -804,7 +1006,7 @@ mod tests {
 
     #[test]
     fn parse_with_one_number_after_colon_only_that_line() {
-        let link_type = parse_include_path("arbitrary:5");
+        let link_type = parse_include_path("arbitrary:5").unwrap();
         assert_eq!(
             link_type,
             LinkType::Include(
@@ -816,7 +1018,7 @@ mod tests {
 
     #[test]
     fn parse_with_one_based_start_becomes_zero_based() {
-        let link_type = parse_include_path("arbitrary:1");
+        let link_type = parse_include_path("arbitrary:1").unwrap();
         assert_eq!(
             link_type,
             LinkType::Include(
@@ -828,7 +1030,7 @@ mod tests {
 
     #[test]
     fn parse_with_zero_based_start_stays_zero_based_but_is_probably_an_error() {
-        let link_type = parse_include_path("arbitrary:0");
+        let link_type = parse_include_path("arbitrary:0").unwrap();
         assert_eq!(
             link_type,
             LinkType::Include(
@@ -840,7 +1042,7 @@ mod tests {
 
     #[test]
     fn parse_start_only_range() {
-        let link_type = parse_include_path("arbitrary:5:");
+        let link_type = parse_include_path("arbitrary:5:").unwrap();
         assert_eq!(
             link_type,
             LinkType::Include(
@@ -852,7 +1054,7 @@ mod tests {
 
     #[test]
     fn parse_start_with_garbage_interpreted_as_start_only_range() {
-        let link_type = parse_include_path("arbitrary:5:NaN");
+        let link_type = parse_include_path("arbitrary:5:NaN").unwrap();
         assert_eq!(
             link_type,
             LinkType::Include(
@@ -864,7 +1066,7 @@ mod tests {
 
     #[test]
     fn parse_end_only_range() {
-        let link_type = parse_include_path("arbitrary::5");
+        let link_type = parse_include_path("arbitrary::5").unwrap();
         assert_eq!(
             link_type,
             LinkType::Include(
@@ -876,7 +1078,7 @@ mod tests {
 
     #[test]
     fn parse_start_and_end_range() {
-        let link_type = parse_include_path("arbitrary:5:10");
+        let link_type = parse_include_path("arbitrary:5:10").unwrap();
         assert_eq!(
             link_type,
             LinkType::Include(
@@ -888,7 +1090,7 @@ mod tests {
 
     #[test]
     fn parse_with_negative_interpreted_as_anchor() {
-        let link_type = parse_include_path("arbitrary:-5");
+        let link_type = parse_include_path("arbitrary:-5").unwrap();
         assert_eq!(
             link_type,
             LinkType::Include(
@@ -900,7 +1102,7 @@ mod tests {
 
     #[test]
     fn parse_with_floating_point_interpreted_as_anchor() {
-        let link_type = parse_include_path("arbitrary:-5.7");
+        let link_type = parse_include_path("arbitrary:-5.7").unwrap();
         assert_eq!(
             link_type,
             LinkType::Include(
@@ -912,7 +1114,7 @@ mod tests {
 
     #[test]
     fn parse_with_anchor_followed_by_colon() {
-        let link_type = parse_include_path("arbitrary:some-anchor:this-gets-ignored");
+        let link_type = parse_include_path("arbitrary:some-anchor:this-gets-ignored").unwrap();
         assert_eq!(
             link_type,
             LinkType::Include(
@@ -924,7 +1126,7 @@ mod tests {
 
     #[test]
     fn parse_with_more_than_three_colons_ignores_everything_after_third_colon() {
-        let link_type = parse_include_path("arbitrary:5:10:17:anything:");
+        let link_type = parse_include_path("arbitrary:5:10:17:anything:").unwrap();
         assert_eq!(
             link_type,
             LinkType::Include(
@@ -932,5 +1134,239 @@ mod tests {
                 RangeOrAnchor::Range(LineRange::from(4..10))
             )
         );
+    }
+
+    #[test]
+    fn parse_quoted_path_without_colon_includes_all() {
+        let link_type = parse_include_path(r#""arbitrary file name.md""#).unwrap();
+        assert_eq!(
+            link_type,
+            LinkType::Include(
+                PathBuf::from("arbitrary file name.md"),
+                RangeOrAnchor::Range(LineRange::from(RangeFull))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_quoted_path_with_range() {
+        let link_type = parse_include_path(r#""arbitrary file name.md":5:10"#).unwrap();
+        assert_eq!(
+            link_type,
+            LinkType::Include(
+                PathBuf::from("arbitrary file name.md"),
+                RangeOrAnchor::Range(LineRange::from(4..10))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_quoted_path_with_anchor() {
+        let link_type = parse_include_path(r#""arbitrary file name.md":some-anchor"#).unwrap();
+        assert_eq!(
+            link_type,
+            LinkType::Include(
+                PathBuf::from("arbitrary file name.md"),
+                RangeOrAnchor::Anchor("some-anchor".to_string())
+            )
+        );
+    }
+
+    #[test]
+    fn parse_quoted_path_with_escapes() {
+        let link_type = parse_include_path(r#""file \"name\".md""#).unwrap();
+        assert_eq!(
+            link_type,
+            LinkType::Include(
+                PathBuf::from("file \"name\".md"),
+                RangeOrAnchor::Range(LineRange::from(RangeFull))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_quoted_path_preserves_whitespace() {
+        let link_type = parse_include_path(r#""  spaces   ""#).unwrap();
+        assert_eq!(
+            link_type,
+            LinkType::Include(
+                PathBuf::from("  spaces   "),
+                RangeOrAnchor::Range(LineRange::from(RangeFull))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_quoted_path_unclosed_returns_error() {
+        assert_eq!(
+            parse_include_path(r#""unclosed.md"#),
+            Some(LinkType::Invalid("unclosed quote in path".to_string()))
+        );
+        assert_eq!(
+            parse_rustdoc_include_path(r#""unclosed.rs"#),
+            Some(LinkType::Invalid("unclosed quote in path".to_string()))
+        );
+        assert_eq!(
+            parse_playground_args(r#""unclosed.rs"#),
+            Some(LinkType::Invalid("unclosed quote in path".to_string()))
+        );
+        for input in [
+            r#""unclosed\"escaped.rs"#,
+            r#""unclosed trailing backslash\"#,
+        ] {
+            assert_eq!(
+                parse_include_path(input),
+                Some(LinkType::Invalid("unclosed quote in path".to_string())),
+                "input: {input:?}"
+            );
+            assert_eq!(
+                parse_rustdoc_include_path(input),
+                Some(LinkType::Invalid("unclosed quote in path".to_string())),
+                "input: {input:?}"
+            );
+            assert_eq!(
+                parse_playground_args(input),
+                Some(LinkType::Invalid("unclosed quote in path".to_string())),
+                "input: {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_replace_all_unclosed_quote() {
+        let start = "Some text with {{#include \"unclosed.md}} here.";
+        let mut chapter_title = "test".to_owned();
+        let res = replace_all(start, "", "", 0, &mut chapter_title);
+        assert_eq!(res, start);
+    }
+
+    #[test]
+    fn include_and_rustdoc_include_parse_quoted_paths_identically() {
+        for input in [
+            r#""my file.md""#,
+            r#""my file.md":5:10"#,
+            r#""my file.md":my-anchor"#,
+        ] {
+            let inc = parse_include_path(input).unwrap();
+            let rust = parse_rustdoc_include_path(input).unwrap();
+            match (&inc, &rust) {
+                (LinkType::Include(p1, r1), LinkType::RustdocInclude(p2, r2)) => {
+                    assert_eq!(p1, p2, "path mismatch for {input:?}");
+                    assert_eq!(r1, r2, "range/anchor mismatch for {input:?}");
+                }
+                _ => panic!("expected Include and RustdocInclude, got {inc:?} vs {rust:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn playground_quoted_path_with_props() {
+        let result = parse_playground_args(r#""my file.rs" prop1 prop2"#).unwrap();
+        match result {
+            LinkType::Playground(path, props) => {
+                assert_eq!(path, PathBuf::from("my file.rs"));
+                assert_eq!(props, vec!["prop1", "prop2"]);
+            }
+            _ => panic!("expected Playground, got {result:?}"),
+        }
+    }
+
+    #[test]
+    fn playground_quoted_path_with_escaped_quote() {
+        let result = parse_playground_args(r#""file \"name\".rs" editable"#).unwrap();
+        match result {
+            LinkType::Playground(path, props) => {
+                assert_eq!(path, PathBuf::from(r#"file "name".rs"#));
+                assert_eq!(props, vec!["editable"]);
+            }
+            _ => panic!("expected Playground, got {result:?}"),
+        }
+    }
+
+    #[test]
+    fn unquoted_paths_parse_as_before() {
+        assert_eq!(
+            parse_include_path("plain.md:1:5").unwrap(),
+            LinkType::Include(
+                PathBuf::from("plain.md"),
+                RangeOrAnchor::Range(LineRange::from(0..5))
+            )
+        );
+        assert_eq!(
+            parse_rustdoc_include_path("plain.rs:1:5").unwrap(),
+            LinkType::RustdocInclude(
+                PathBuf::from("plain.rs"),
+                RangeOrAnchor::Range(LineRange::from(0..5))
+            )
+        );
+        match parse_playground_args("plain.rs editable no_run").unwrap() {
+            LinkType::Playground(path, props) => {
+                assert_eq!(path, PathBuf::from("plain.rs"));
+                assert_eq!(props, vec!["editable", "no_run"]);
+            }
+            other => panic!("expected Playground, got {other:?}"),
+        }
+        assert_eq!(parse_include_path(""), None);
+        assert_eq!(parse_rustdoc_include_path(""), None);
+        assert_eq!(parse_playground_args(""), None);
+        assert_eq!(parse_include_path("   "), None);
+        assert_eq!(parse_rustdoc_include_path("   "), None);
+        assert_eq!(parse_playground_args("   "), None);
+    }
+
+    #[test]
+    fn quoted_path_escapes() {
+        // Only `\"` and `\\` are escape sequences; any other `\X` keeps the
+        // backslash, so paths like `C:\Users\file.md` keep working.
+        let cases = [
+            (r#"folder\\file.md""#, r"folder\file.md"),
+            (r#"path\to\target.md""#, r"path\to\target.md"),
+            (r#"dir\new\file.md""#, r"dir\new\file.md"),
+            (r#"C:\Users\test\file.md""#, r"C:\Users\test\file.md"),
+            (
+                r#"C:/Users/name\docs/file.md""#,
+                r"C:/Users/name\docs/file.md",
+            ),
+            (r#".\docs\my file.md""#, r".\docs\my file.md"),
+            (r#"папка\файл.md""#, r"папка\файл.md"),
+            (r#"\α\β.md""#, r"\α\β.md"),
+            (r#"\🦀\test.md""#, r"\🦀\test.md"),
+            (r#"\a\b\c\d.md""#, r"\a\b\c\d.md"),
+            (r#"file \"name\".md""#, r#"file "name".md"#),
+            (r#"my\"quoted\file.md""#, r#"my"quoted\file.md"#),
+            (r#"a\\b\tc\nd\\e\"f""#, r#"a\b\tc\nd\e"f"#),
+            (r#"C:\\Users\\file.md""#, r"C:\Users\file.md"),
+            (
+                r#"/usr/local/my docs/file.md""#,
+                "/usr/local/my docs/file.md",
+            ),
+            (r#"file:with:colons.md""#, "file:with:colons.md"),
+            (r#"""#, ""),
+        ];
+        for (input, expected) in cases {
+            let (path, _) = parse_quoted_path(input)
+                .unwrap_or_else(|e| panic!("failed to parse {input:?}: {e}"));
+            assert_eq!(path, PathBuf::from(expected), "input: {input:?}");
+        }
+    }
+
+    #[test]
+    fn quoted_path_rest_after_closing_quote() {
+        let (path, rest) = parse_quoted_path(r#"path\\file.md":5:10"#).unwrap();
+        assert_eq!(path, PathBuf::from(r"path\file.md"));
+        assert_eq!(rest, ":5:10");
+
+        let (path, rest) = parse_quoted_path(r#"a\"b\\c.md":2:4"#).unwrap();
+        assert_eq!(path, PathBuf::from(r#"a"b\c.md"#));
+        assert_eq!(rest, ":2:4");
+
+        let (path, rest) = parse_quoted_path(r#"my docs\file.md":10:20"#).unwrap();
+        assert_eq!(path, PathBuf::from(r"my docs\file.md"));
+        assert_eq!(rest, ":10:20");
+
+        // Doubled backslash right before the closing quote: `\\` -> `\`, then close.
+        let (path, rest) = parse_quoted_path(r#"path\\":5"#).unwrap();
+        assert_eq!(path, PathBuf::from(r"path\"));
+        assert_eq!(rest, ":5");
     }
 }

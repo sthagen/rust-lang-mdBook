@@ -98,6 +98,32 @@ Like formatting your code with `rustfmt`, running clippy regularly and before yo
     cargo clippy
     ```
 
+### Finding typos with `typos-cli`
+
+[`typos`](https://github.com/crate-ci/typos) checks the repository for spelling mistakes and runs as part of CI. Its configuration and excluded files are listed in `typos.toml`.
+
+1. Install `typos-cli`:
+    ```
+    cargo install typos-cli
+    ```
+2. Run it from the repository root:
+    ```
+    typos
+    ```
+
+### Auditing dependencies with `cargo audit`
+
+[`cargo audit`](https://github.com/rustsec/cargo-audit) is a tool that checks the repository for known vulnerabilities in the dependencies.
+
+1. Install `cargo audit`:
+    ```
+    cargo install cargo-audit
+    ```
+2. Run it from the repository root:
+    ```
+    cargo audit
+    ```
+
 ## Change requirements
 
 Please consider the following when making a change:
@@ -238,3 +264,10 @@ Instructions for mdBook maintainers to publish a new release:
         --title v$MDBOOK_VERS \
         --notes "See https://github.com/rust-lang/mdBook/blob/master/CHANGELOG.md#mdbook-${MDBOOK_VERS//.} for a complete list of changes."
    ```
+
+## LLM policy
+
+mdBook follows the same [LLM usage policy] as `rust-lang/rust`. Please read it before using LLM
+assistance when participating in `rust-lang/mdBook`.
+
+[LLM usage policy]: https://forge.rust-lang.org/policies/llm-usage.html
