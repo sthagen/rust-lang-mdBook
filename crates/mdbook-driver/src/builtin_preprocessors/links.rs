@@ -1189,6 +1189,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_quoted_path_preserves_whitespace() {
+        let link_type = parse_include_path(r#""  spaces   ""#).unwrap();
+        assert_eq!(
+            link_type,
+            LinkType::Include(
+                PathBuf::from("  spaces   "),
+                RangeOrAnchor::Range(LineRange::from(RangeFull))
+            )
+        );
+    }
+
+    #[test]
     fn parse_quoted_path_unclosed_returns_error() {
         assert_eq!(
             parse_include_path(r#""unclosed.md"#),
