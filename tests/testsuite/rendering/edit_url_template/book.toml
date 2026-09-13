@@ -2,4 +2,4 @@
 title = "edit_url_template"
 
 [output.html]
-edit-url-template = "https://github.com/rust-lang/mdBook/edit/master/guide/{path}"
+edit-url-template = "https://github.com/rust-lang/mdBook/edit/main/guide/{path}"

@@ -38,7 +38,7 @@ To uninstall, run the command `cargo uninstall mdbook`.
 [Rust installation page]: https://www.rust-lang.org/tools/install
 [crates.io]: https://crates.io/
 
-### Installing the latest master version
+### Installing the latest main version
 
 The version published to crates.io will ever so slightly be behind the version hosted on GitHub.
 If you need the latest version you can build the git version of mdBook yourself.
@@ -54,4 +54,4 @@ Again, make sure to add the Cargo bin directory to your `PATH`.
 
 If you are interested in making modifications to mdBook itself, check out the [Contributing Guide] for more information.
 
-[Contributing Guide]: https://github.com/rust-lang/mdBook/blob/master/CONTRIBUTING.md
+[Contributing Guide]: https://github.com/rust-lang/mdBook/blob/main/CONTRIBUTING.md

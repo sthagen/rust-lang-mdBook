@@ -58,7 +58,7 @@ fn get_prs(previous: &str) -> Result<Vec<(String, String)>> {
             "log",
             "--first-parent",
             &format!("--pretty=format:%B%n{SEPARATOR}"),
-            "upstream/master",
+            "upstream/main",
             &format!("v{previous}...upstream/HEAD"),
         ])
         .output()?;

@@ -2,7 +2,7 @@
 
 [![Documentation](https://img.shields.io/docsrs/mdbook-html)](https://docs.rs/mdbook-html)
 [![crates.io](https://img.shields.io/crates/v/mdbook-html.svg)](https://crates.io/crates/mdbook-html)
-[![Changelog](https://img.shields.io/badge/CHANGELOG-Latest-green)](https://github.com/rust-lang/mdBook/blob/master/CHANGELOG.md)
+[![Changelog](https://img.shields.io/badge/CHANGELOG-Latest-green)](https://github.com/rust-lang/mdBook/blob/main/CHANGELOG.md)
 
 This is the HTML renderer for [mdBook](https://rust-lang.github.io/mdBook/). This is intended for internal use only. It is automatically included by [`mdbook-driver`](https://crates.io/crates/mdbook-driver) to render books to HTML.
 
@@ -10,4 +10,4 @@ This is the HTML renderer for [mdBook](https://rust-lang.github.io/mdBook/). Thi
 
 ## License
 
-[Mozilla Public License, version 2.0](https://github.com/rust-lang/mdBook/blob/master/LICENSE)
+[Mozilla Public License, version 2.0](https://github.com/rust-lang/mdBook/blob/main/LICENSE)

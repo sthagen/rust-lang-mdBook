@@ -16,5 +16,5 @@ If you are interested in contributing to the development of mdBook, check out th
 All the code in this repository is released under the ***Mozilla Public License v2.0***, for more information take a look at the [LICENSE] file.
 
 [User Guide]: https://rust-lang.github.io/mdBook/
-[contribution guide]: https://github.com/rust-lang/mdBook/blob/master/CONTRIBUTING.md
-[LICENSE]: https://github.com/rust-lang/mdBook/blob/master/LICENSE
+[contribution guide]: https://github.com/rust-lang/mdBook/blob/main/CONTRIBUTING.md
+[LICENSE]: https://github.com/rust-lang/mdBook/blob/main/LICENSE

@@ -2,7 +2,7 @@
 
 [![Documentation](https://img.shields.io/docsrs/mdbook-renderer)](https://docs.rs/mdbook-renderer)
 [![crates.io](https://img.shields.io/crates/v/mdbook-renderer.svg)](https://crates.io/crates/mdbook-renderer)
-[![Changelog](https://img.shields.io/badge/CHANGELOG-Latest-green)](https://github.com/rust-lang/mdBook/blob/master/CHANGELOG.md)
+[![Changelog](https://img.shields.io/badge/CHANGELOG-Latest-green)](https://github.com/rust-lang/mdBook/blob/main/CHANGELOG.md)
 
 This is the Rust library to implement a [renderer](https://rust-lang.github.io/mdBook/for_developers/backends.html) for [mdBook](https://rust-lang.github.io/mdBook/).
 
@@ -10,4 +10,4 @@ This is the Rust library to implement a [renderer](https://rust-lang.github.io/m
 
 ## License
 
-[Mozilla Public License, version 2.0](https://github.com/rust-lang/mdBook/blob/master/LICENSE)
+[Mozilla Public License, version 2.0](https://github.com/rust-lang/mdBook/blob/main/LICENSE)

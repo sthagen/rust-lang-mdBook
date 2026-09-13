@@ -131,7 +131,7 @@ Please consider the following when making a change:
 * Almost all changes that modify the Rust code must be accompanied with a test.
 
 * Almost all features and changes must update the documentation.
-  mdBook has the [mdBook Guide](https://rust-lang.github.io/mdBook/) whose source is at <https://github.com/rust-lang/mdBook/tree/master/guide>.
+  mdBook has the [mdBook Guide](https://rust-lang.github.io/mdBook/) whose source is at <https://github.com/rust-lang/mdBook/tree/main/guide>.
 
 * Almost all Rust items should be documented with doc comments.
   See the [Rustdoc Book](https://doc.rust-lang.org/rustdoc/) for more information on writing doc comments.
@@ -211,7 +211,7 @@ If you want to disable the headless mode, use the `--disable-headless-test` opti
 cargo test --test gui -- --disable-headless-test
 ```
 
-The GUI tests are in the directory `tests/gui` in text files with the `.goml` extension. The books that the tests use are located in the `tests/gui/books` directory. These tests are run using a `node.js` framework called `browser-ui-test`. You can find documentation for this language on its [repository](https://github.com/GuillaumeGomez/browser-UI-test/blob/master/goml-script.md).
+The GUI tests are in the directory `tests/gui` in text files with the `.goml` extension. The books that the tests use are located in the `tests/gui/books` directory. These tests are run using a `node.js` framework called `browser-ui-test`. You can find documentation for this language on its [repository](https://github.com/GuillaumeGomez/browser-UI-test/blob/main/goml-script.md).
 
 ### Checking changes in `.js` files
 
@@ -237,9 +237,9 @@ The following are instructions for updating [highlight.js](https://highlightjs.o
 1. Run `npm install`
 1. Run `node tools/build.js :common apache armasm coffeescript d handlebars haskell http julia nginx nim nix properties r scala x86asm yaml`
 1. Compare the language list that it spits out to the one in [`syntax-highlighting.md`](https://github.com/camelid/mdBook/blob/master/guide/src/format/theme/syntax-highlighting.md). If any are missing, add them to the list and rebuild (and update these docs). If any are added to the common set, add them to `syntax-highlighting.md`.
-1. Copy `build/highlight.min.js` to mdbook's directory [`highlight.js`](https://github.com/rust-lang/mdBook/blob/master/src/theme/highlight.js).
+1. Copy `build/highlight.min.js` to mdbook's directory [`highlight.js`](https://github.com/rust-lang/mdBook/blob/main/src/theme/highlight.js).
 1. Be sure to check the highlight.js [CHANGES](https://github.com/highlightjs/highlight.js/blob/main/CHANGES.md) for any breaking changes. Breaking changes that would affect users will need to wait until the next major release.
-1. Build mdbook with the new file and build some books with the new version and compare the output with a variety of languages to see if anything changes. The [syntax GUI test](https://github.com/rust-lang/mdBook/tree/master/tests/gui/books/highlighting) contains a chapter with many languages to examine. Update the test (`highlighting.goml`) to add any new languages.
+1. Build mdbook with the new file and build some books with the new version and compare the output with a variety of languages to see if anything changes. The [syntax GUI test](https://github.com/rust-lang/mdBook/tree/main/tests/gui/books/highlighting) contains a chapter with many languages to examine. Update the test (`highlighting.goml`) to add any new languages.
 
 ## Publishing new releases
 
@@ -247,7 +247,7 @@ Instructions for mdBook maintainers to publish a new release:
 
 1. Create a PR that bumps the version and updates the changelog:
     1. `git fetch upstream`
-    2. `git checkout -B bump-version upstream/master && git branch --set-upstream-to=origin/bump-version`
+    2. `git checkout -B bump-version upstream/main && git branch --set-upstream-to=origin/bump-version`
     3. `cargo xtask bump <BUMP>`
        - This will update the version of all the crates.
        - `cargo set-version` must first be installed with `cargo install cargo-edit`.
@@ -262,7 +262,7 @@ Instructions for mdBook maintainers to publish a new release:
    MDBOOK_VERS="`cargo read-manifest | jq -r .version`" ; \
     gh release create -R rust-lang/mdbook v$MDBOOK_VERS \
         --title v$MDBOOK_VERS \
-        --notes "See https://github.com/rust-lang/mdBook/blob/master/CHANGELOG.md#mdbook-${MDBOOK_VERS//.} for a complete list of changes."
+        --notes "See https://github.com/rust-lang/mdBook/blob/main/CHANGELOG.md#mdbook-${MDBOOK_VERS//.} for a complete list of changes."
    ```
 
 ## LLM policy

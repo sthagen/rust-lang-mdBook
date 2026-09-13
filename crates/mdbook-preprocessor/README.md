@@ -2,7 +2,7 @@
 
 [![Documentation](https://img.shields.io/docsrs/mdbook-preprocessor)](https://docs.rs/mdbook-preprocessor)
 [![crates.io](https://img.shields.io/crates/v/mdbook-preprocessor.svg)](https://crates.io/crates/mdbook-preprocessor)
-[![Changelog](https://img.shields.io/badge/CHANGELOG-Latest-green)](https://github.com/rust-lang/mdBook/blob/master/CHANGELOG.md)
+[![Changelog](https://img.shields.io/badge/CHANGELOG-Latest-green)](https://github.com/rust-lang/mdBook/blob/main/CHANGELOG.md)
 
 This is the Rust library to implement a [preprocessor](https://rust-lang.github.io/mdBook/for_developers/preprocessors.html) for [mdBook](https://rust-lang.github.io/mdBook/).
 
@@ -10,4 +10,4 @@ This is the Rust library to implement a [preprocessor](https://rust-lang.github.
 
 ## License
 
-[Mozilla Public License, version 2.0](https://github.com/rust-lang/mdBook/blob/master/LICENSE)
+[Mozilla Public License, version 2.0](https://github.com/rust-lang/mdBook/blob/main/LICENSE)

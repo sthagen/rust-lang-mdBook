@@ -495,9 +495,9 @@ fn determine_preprocessors(
 
     // Now that all links have been established, queue preprocessors in a suitable order
     let mut preprocessors = IndexMap::with_capacity(preprocessor_names.len());
-    // `pop_all()` returns an empty vector when no more items are not being depended upon
-    for mut names in std::iter::repeat_with(|| preprocessor_names.pop_all())
-        .take_while(|names| !names.is_empty())
+    // `pop_batch()` returns an empty vector when no more items are not being depended upon
+    for mut names in std::iter::repeat_with(|| preprocessor_names.pop_batch())
+        .take_while(|names: &Vec<_>| !names.is_empty())
     {
         // The `topological_sort` crate does not guarantee a stable order for ties, even across
         // runs of the same program. Thus, we break ties manually by sorting.

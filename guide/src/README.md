@@ -49,7 +49,7 @@ mdBook is free and open source. You can find the source code on
 [GitHub](https://github.com/rust-lang/mdBook) and issues and feature requests can be posted on
 the [GitHub issue tracker](https://github.com/rust-lang/mdBook/issues). mdBook relies on the community to fix bugs and
 add features: if you'd like to contribute, please read
-the [CONTRIBUTING](https://github.com/rust-lang/mdBook/blob/master/CONTRIBUTING.md) guide and consider opening
+the [CONTRIBUTING](https://github.com/rust-lang/mdBook/blob/main/CONTRIBUTING.md) guide and consider opening
 a [pull request](https://github.com/rust-lang/mdBook/pulls).
 
 ## License

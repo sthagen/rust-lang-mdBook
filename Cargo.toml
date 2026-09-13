@@ -63,7 +63,7 @@ snapbox = "1.2.2"
 tempfile = "3.27.0"
 tokio = "1.53.1"
 toml = "1.1.4"
-topological-sort = "0.2.2"
+topological-sort = "0.3.0"
 tower-http = "0.7.0"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
@@ -82,7 +82,6 @@ edition.workspace = true
 exclude = ["/guide/*"]
 keywords = ["book", "gitbook", "rustbook", "markdown"]
 license.workspace = true
-readme = "README.md"
 repository.workspace = true
 description = "Creates a book from markdown files"
 rust-version.workspace = true

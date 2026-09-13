@@ -97,10 +97,10 @@ if __name__ == '__main__':
 ```
 
 
-[emphasis-example]: https://github.com/rust-lang/mdBook/tree/master/examples/remove-emphasis/
+[emphasis-example]: https://github.com/rust-lang/mdBook/tree/main/examples/remove-emphasis/
 [pc]: https://crates.io/crates/pulldown-cmark
 [pctc]: https://crates.io/crates/pulldown-cmark-to-cmark
-[an example no-op preprocessor]: https://github.com/rust-lang/mdBook/blob/master/examples/nop-preprocessor.rs
+[an example no-op preprocessor]: https://github.com/rust-lang/mdBook/blob/main/examples/nop-preprocessor.rs
 [`parse_input()`]: https://docs.rs/mdbook-preprocessor/latest/mdbook_preprocessor/fn.parse_input.html
 [`Book::for_each_mut()`]: https://docs.rs/mdbook-preprocessor/latest/mdbook_preprocessor/book/struct.Book.html#method.for_each_mut
 [`PreprocessorContext`]: https://docs.rs/mdbook-preprocessor/latest/mdbook_preprocessor/struct.PreprocessorContext.html

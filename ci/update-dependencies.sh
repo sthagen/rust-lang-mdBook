@@ -11,7 +11,7 @@ set -ex
 git fetch origin update-dependencies
 if git checkout update-dependencies
 then
-    git reset --hard origin/master
+    git reset --hard origin/main
 else
     git checkout -b update-dependencies
 fi
@@ -41,4 +41,4 @@ git push --force origin update-dependencies
 
 gh pr create --fill \
     --head update-dependencies \
-    --base master
+    --base main
