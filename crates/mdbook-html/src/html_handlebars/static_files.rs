@@ -11,6 +11,34 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tracing::debug;
 
+/// Normalize path separators to `/` for cross-platform hash map lookups.
+///
+/// The `{{ resource "name" }}` directive in templates uses `/` as the
+/// separator, but `Path::join` on Windows produces `\`. This function
+/// ensures consistent keys regardless of OS.
+#[derive(Hash, PartialEq, Eq, Clone)]
+struct SlashPath<'a>(Cow<'a, str>);
+
+impl<'a> SlashPath<'a> {
+    fn new(path: &'a str) -> SlashPath<'a> {
+        #[cfg(windows)]
+        {
+            Self(Cow::Owned(path.replace('\\', "/")))
+        }
+        #[cfg(not(windows))]
+        {
+            Self(Cow::Borrowed(path))
+        }
+    }
+
+    fn to_owned(self) -> SlashPath<'static> {
+        match self.0 {
+            Cow::Owned(s) => SlashPath(Cow::Owned(s)),
+            Cow::Borrowed(s) => SlashPath(Cow::Owned(s.to_owned())),
+        }
+    }
+}
+
 /// Map static files to their final names and contents.
 ///
 /// It performs [fingerprinting], if you call the `hash_files` method.
@@ -21,7 +49,7 @@ use tracing::debug;
 /// [fingerprinting]: https://guides.rubyonrails.org/asset_pipeline.html#fingerprinting-versioning-with-digest-based-urls
 pub(super) struct StaticFiles {
     static_files: Vec<StaticFile>,
-    hash_map: HashMap<String, String>,
+    hash_map: HashMap<SlashPath<'static>, String>,
 }
 
 enum StaticFile {
@@ -102,18 +130,19 @@ impl StaticFiles {
         for custom_file in custom_files {
             let input_location = root.join(custom_file);
 
+            let filename = custom_file
+                .to_str()
+                .with_context(|| "resource file names must be valid utf8")?
+                .to_owned();
             this.static_files.push(StaticFile::Additional {
                 input_location,
-                filename: custom_file
-                    .to_str()
-                    .with_context(|| "resource file names must be valid utf8")?
-                    .to_owned(),
+                filename,
             });
         }
 
         for input_location in theme.font_files.iter().cloned() {
-            let filename = Path::new("fonts")
-                .join(input_location.file_name().unwrap())
+            let font_path = Path::new("fonts").join(input_location.file_name().unwrap());
+            let filename = font_path
                 .to_str()
                 .with_context(|| "resource file names must be valid utf8")?
                 .to_owned();
@@ -150,7 +179,8 @@ impl StaticFiles {
                         if name != "" && suffix != "" && suffix != "txt" {
                             let hex = hex::encode(&Sha256::digest(data)[..4]);
                             let new_filename = format!("{}-{}.{}", name, hex, suffix);
-                            self.hash_map.insert(filename.clone(), new_filename.clone());
+                            self.hash_map
+                                .insert(SlashPath::new(filename).to_owned(), new_filename.clone());
                             *filename = new_filename;
                         }
                     }
@@ -180,7 +210,8 @@ impl StaticFiles {
                             }
                             let hex = hex::encode(&digest.finalize()[..4]);
                             let new_filename = format!("{}-{}.{}", name, hex, suffix);
-                            self.hash_map.insert(filename.clone(), new_filename.clone());
+                            self.hash_map
+                                .insert(SlashPath::new(filename).to_owned(), new_filename.clone());
                             *filename = new_filename;
                         }
                     }
@@ -196,7 +227,7 @@ impl StaticFiles {
         // handlebars syntax, even if they technically aren't.
         static_regex!(RESOURCE, bytes, r#"\{\{ resource "([^"]+)" \}\}"#);
         fn replace_all<'a>(
-            hash_map: &HashMap<String, String>,
+            hash_map: &HashMap<SlashPath<'_>, String>,
             data: &'a [u8],
             filename: &str,
         ) -> Cow<'a, [u8]> {
@@ -206,7 +237,10 @@ impl StaticFiles {
                     .expect("capture 1 in resource regex")
                     .as_bytes();
                 let name = std::str::from_utf8(name).expect("resource name with invalid utf8");
-                let resource_filename = hash_map.get(name).map(|s| &s[..]).unwrap_or(name);
+                let resource_filename = hash_map
+                    .get(&SlashPath::new(name))
+                    .map(|s| &s[..])
+                    .unwrap_or(name);
                 let path_to_root = fs::path_to_root(filename);
                 format!("{}{}", path_to_root, resource_filename)
                     .as_bytes()
@@ -256,7 +290,11 @@ impl StaticFiles {
                 }
             }
         }
-        let hash_map = self.hash_map;
+        let hash_map = self
+            .hash_map
+            .into_iter()
+            .map(|(key, value)| (key.0.into_owned(), value))
+            .collect();
         Ok(ResourceHelper { hash_map })
     }
 }
@@ -316,5 +354,42 @@ mod tests {
         // book.js winds up empty
         let book_js_content = fs::read_to_string(temp_dir.path().join("book-e3b0c442.js")).unwrap();
         assert_eq!("", book_js_content);
+    }
+
+    #[test]
+    fn test_normalize_path_forward_slashes_unchanged() {
+        assert_eq!(SlashPath::new("css/general.css").0, "css/general.css");
+        assert_eq!(SlashPath::new("book.js").0, "book.js");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_normalize_path_windows_separators() {
+        assert_eq!(SlashPath::new("css\\general.css").0, "css/general.css");
+        assert_eq!(SlashPath::new("css/general.css").0, "css/general.css");
+        assert_eq!(
+            SlashPath::new("fonts\\OpenSans\\font.woff2").0,
+            "fonts/OpenSans/font.woff2"
+        );
+        assert_eq!(
+            SlashPath::new("fonts/OpenSans/font.woff2").0,
+            "fonts/OpenSans/font.woff2"
+        );
+    }
+
+    #[test]
+    fn static_paths_should_only_contain_slashes() {
+        let mut static_files =
+            StaticFiles::new(&Theme::default(), &HtmlConfig::default(), &Path::new(".")).unwrap();
+        // Needed to populate `hash_map`.
+        static_files.hash_files().unwrap();
+
+        assert!(!static_files.hash_map.is_empty());
+        assert!(
+            static_files
+                .hash_map
+                .keys()
+                .all(|path| !path.0.contains('\\'))
+        );
     }
 }
